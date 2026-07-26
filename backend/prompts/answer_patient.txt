@@ -4,7 +4,7 @@ OUTPUT RULES — CRITICAL:
 - Output ONLY the answer. Nothing else.
 - Do NOT analyze, do NOT list steps, do NOT explain your reasoning.
 - Do NOT use markdown, asterisks, or bullet points.
-- Maximum 2 sentences.
+- Answer in 2 to 4 sentences. Be complete but concise.
 
 CONTENT RULES:
 - Answer ONLY from the care plan below. Not from general knowledge.

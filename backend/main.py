@@ -144,7 +144,7 @@ def sarvam_llm_with_history(system_prompt: str, history: list[dict], new_user_me
         json={
             "model": "sarvam-105b",  # better instruction-following, no reasoning bleed
             "messages": messages,
-            "temperature": 0.2, # force short answers
+            "temperature": 0.2
         },
         timeout=60.0,
     )
