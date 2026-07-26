@@ -280,11 +280,76 @@ function DoctorView({ onSwitchRole }: { onSwitchRole: () => void }) {
   )
 }
 
+// ── Patient ID Entry Screen ───────────────────────────────────────────────────
+
+function PatientLogin({ onLogin }: { onLogin: (id: string) => void }) {
+  const [input, setInput] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const id = input.trim().toUpperCase()
+    if (!id) return
+    setLoading(true); setError('')
+    try {
+      const res = await fetch(`/record?patient_id=${id}`)
+      if (!res.ok) throw new Error('Patient ID not found. Please check and try again.')
+      onLogin(id)
+    } catch (e: any) {
+      setError(e.message)
+    } finally { setLoading(false) }
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center px-6">
+      <div className="w-full max-w-sm space-y-8">
+        <div className="text-center">
+          <div className="text-6xl mb-4">🏥</div>
+          <h1 className="text-3xl font-bold text-white">Welcome</h1>
+          <p className="text-slate-400 mt-2">Enter your Patient ID to view your discharge instructions</p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="text-xs uppercase tracking-widest text-slate-400 block mb-2">
+              Patient ID
+            </label>
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="e.g. P001"
+              autoFocus
+              className="w-full bg-slate-800 border border-slate-600 text-white text-xl text-center rounded-xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent placeholder-slate-600 uppercase tracking-widest"
+            />
+          </div>
+
+          {error && (
+            <p className="text-red-400 text-sm text-center">{error}</p>
+          )}
+
+          <button
+            type="submit"
+            disabled={loading || !input.trim()}
+            className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold py-4 rounded-xl text-lg transition-all hover:scale-105 shadow-lg shadow-emerald-500/30"
+          >
+            {loading ? 'Verifying...' : 'Continue'}
+          </button>
+        </form>
+
+        <p className="text-slate-600 text-xs text-center">
+          Your ID is printed on your discharge slip
+        </p>
+      </div>
+    </div>
+  )
+}
+
 // ── Patient View ──────────────────────────────────────────────────────────────
 
 function PatientView({ onSwitchRole }: { onSwitchRole: () => void }) {
-  const [patients, setPatients] = useState<PatientStub[]>([])
-  const [selectedId, setSelectedId] = useState('P001')
+  const [patientId, setPatientId] = useState<string | null>(null)
   const [carePlan, setCarePlan] = useState<CarePlan | null>(null)
   const [transcript, setTranscript] = useState('')
   const [aiAnswer, setAiAnswer] = useState('')
@@ -292,25 +357,23 @@ function PatientView({ onSwitchRole }: { onSwitchRole: () => void }) {
   const [loading, setLoading] = useState(false)
   const rec = useRecorder()
 
-  useEffect(() => {
-    fetch('/patients').then(r => r.json()).then(setPatients)
-      .catch(() => setStatus('Could not load patients'))
-  }, [])
-
-  useEffect(() => {
-    if (!selectedId) return
-    setCarePlan(null); setTranscript(''); setAiAnswer('')
-    fetch(`/record?patient_id=${selectedId}`).then(r => r.json()).then(setCarePlan)
-      .catch(() => setStatus('Could not load care plan'))
-  }, [selectedId])
+  // Once patient logs in, fetch their record
+  const handleLogin = (id: string) => {
+    setPatientId(id)
+    fetch(`/record?patient_id=${id}`)
+      .then(r => r.json())
+      .then(setCarePlan)
+      .catch(() => setStatus('Could not load your care plan'))
+  }
 
   const handleStop = async () => {
+    if (!patientId) return
     const blob = await rec.stop()
     setLoading(true); setStatus('Processing your question...')
     try {
       const form = new FormData()
       form.append('audio', blob, 'patient.webm')
-      const res = await fetch(`/patient?patient_id=${selectedId}`, { method: 'POST', body: form })
+      const res = await fetch(`/patient?patient_id=${patientId}`, { method: 'POST', body: form })
       if (!res.ok) throw new Error(await res.text())
       const data = await res.json()
       setTranscript(data.transcript)
@@ -323,9 +386,10 @@ function PatientView({ onSwitchRole }: { onSwitchRole: () => void }) {
   }
 
   const handleExplain = async () => {
+    if (!patientId) return
     setLoading(true); setStatus('Preparing your discharge summary...')
     try {
-      const res = await fetch(`/summary?patient_id=${selectedId}`)
+      const res = await fetch(`/summary?patient_id=${patientId}`)
       if (!res.ok) throw new Error(await res.text())
       const data = await res.json()
       setAiAnswer(data.summary_text)
@@ -336,17 +400,27 @@ function PatientView({ onSwitchRole }: { onSwitchRole: () => void }) {
     } finally { setLoading(false) }
   }
 
+  // Step 1: ask for patient ID
+  if (!patientId) return <PatientLogin onLogin={handleLogin} />
+
+  // Step 2: show their personal view
   return (
     <div className="min-h-screen bg-slate-900 text-white">
       <header className="border-b border-slate-700 px-8 py-5 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white">CareBridge <span className="text-emerald-400 text-lg font-normal">— Patient</span></h1>
-          <p className="text-slate-400 text-sm">Your personal discharge companion</p>
+          {carePlan && <p className="text-slate-400 text-sm">Hello, {carePlan.name}</p>}
         </div>
-        <button onClick={onSwitchRole}
-          className="text-slate-400 hover:text-white text-sm border border-slate-700 hover:border-slate-500 px-4 py-2 rounded-lg transition-all">
-          Switch Role
-        </button>
+        <div className="flex items-center gap-3">
+          <button onClick={() => { setPatientId(null); setCarePlan(null) }}
+            className="text-slate-400 hover:text-white text-sm border border-slate-700 hover:border-slate-500 px-4 py-2 rounded-lg transition-all">
+            Change Patient
+          </button>
+          <button onClick={onSwitchRole}
+            className="text-slate-400 hover:text-white text-sm border border-slate-700 hover:border-slate-500 px-4 py-2 rounded-lg transition-all">
+            Switch Role
+          </button>
+        </div>
       </header>
 
       <main className="max-w-2xl mx-auto px-6 py-8 space-y-6">
@@ -357,28 +431,22 @@ function PatientView({ onSwitchRole }: { onSwitchRole: () => void }) {
           </div>
         )}
 
-        {/* Patient selector — patients pick themselves */}
-        <div className="space-y-2">
-          <p className="text-xs uppercase tracking-widest text-slate-400">Who are you?</p>
-          <div className="grid grid-cols-2 gap-3">
-            {patients.map((p) => (
-              <button key={p.id} onClick={() => setSelectedId(p.id)}
-                className={`flex items-center gap-3 px-4 py-3 rounded-xl border text-left transition-all
-                  ${selectedId === p.id
-                    ? 'bg-emerald-600 border-emerald-500 text-white shadow-lg shadow-emerald-500/30 scale-105'
-                    : 'bg-slate-800 border-slate-700 text-slate-300 hover:border-slate-500 hover:bg-slate-700'}`}>
-                <div className={`w-9 h-9 rounded-full flex items-center justify-center font-bold text-sm shrink-0
-                  ${selectedId === p.id ? 'bg-emerald-500' : 'bg-slate-600'}`}>
-                  {p.name[0]}
-                </div>
-                <div className="min-w-0">
-                  <p className="font-semibold text-sm truncate">{p.name}</p>
-                  <p className={`text-xs ${selectedId === p.id ? 'text-emerald-200' : 'text-slate-500'}`}>{p.id} · {p.age}y</p>
-                </div>
-              </button>
-            ))}
+        {/* Diagnosis highlight — only their own */}
+        {carePlan && (
+          <div className="bg-slate-800 rounded-2xl px-6 py-5 flex items-center gap-4">
+            <div className="w-12 h-12 bg-emerald-600 rounded-full flex items-center justify-center text-xl font-bold shrink-0">
+              {carePlan.name[0]}
+            </div>
+            <div>
+              <p className="text-white font-semibold text-lg">{carePlan.name}</p>
+              <p className="text-slate-400 text-sm">{carePlan.diagnosis}</p>
+            </div>
+            <div className="ml-auto text-right">
+              <p className="text-xs text-slate-500">Patient ID</p>
+              <p className="text-slate-300 font-mono font-semibold">{carePlan.id}</p>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Explain To Me — the big moment */}
         {carePlan && (
@@ -413,7 +481,7 @@ function PatientView({ onSwitchRole }: { onSwitchRole: () => void }) {
           </section>
         )}
 
-        {/* Compact care plan */}
+        {/* Their care plan only */}
         {carePlan && (
           <section className="space-y-3">
             <h2 className="text-lg font-semibold">Your Care Plan</h2>
