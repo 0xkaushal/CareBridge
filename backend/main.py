@@ -32,6 +32,72 @@ conversation_store: dict[str, list[dict]] = {}
 
 MAX_HISTORY = 10  # keep last N turns (user+assistant pairs) to stay within token budget
 
+# ── Unanswered questions store ────────────────────────────────────────────────
+# Questions the AI could not answer from the care plan — flagged for the doctor.
+# { patient_id: [ {question_original, question_english, asked_at}, ... ] }
+
+unanswered_store: dict[str, list[dict]] = {}
+
+UNANSWERED_MARKERS = [
+    "care plan does not mention",   # English
+    "care plan mein yeh nahi",      # Hindi romanized
+    "केयर प्लान में यह नहीं",         # Hindi devanagari
+    "aapke care plan mein",         # Hindi romanized variant
+    "apne doctor se poochh",        # Hindi fallback phrase
+    "doctor se poochh",             # short variant
+]
+
+def flag_unanswered(patient_id: str, original_question: str, english_question: str):
+    if patient_id not in unanswered_store:
+        unanswered_store[patient_id] = []
+    entry = {
+        "question_original": original_question,
+        "question_english": english_question,
+        "asked_at": __import__("datetime").datetime.now().strftime("%H:%M"),
+    }
+    unanswered_store[patient_id].append(entry)
+
+    # Also persist to mock_patients.json so it survives restarts
+    try:
+        with open(PATIENTS_PATH) as f:
+            data = json.load(f)
+        for p in data["patients"]:
+            if p["id"] == patient_id:
+                if "unanswered_questions" not in p:
+                    p["unanswered_questions"] = []
+                p["unanswered_questions"].append(entry)
+                break
+        with open(PATIENTS_PATH, "w") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"[flag_unanswered] Failed to persist: {e}")
+
+def get_unanswered(patient_id: str) -> list[dict]:
+    # If not in memory, try loading from JSON file
+    if patient_id not in unanswered_store:
+        try:
+            for p in load_all_patients():
+                if p["id"] == patient_id:
+                    unanswered_store[patient_id] = p.get("unanswered_questions", [])
+                    break
+        except Exception:
+            unanswered_store[patient_id] = []
+    return unanswered_store.get(patient_id, [])
+
+def clear_unanswered(patient_id: str):
+    unanswered_store[patient_id] = []
+    try:
+        with open(PATIENTS_PATH) as f:
+            data = json.load(f)
+        for p in data["patients"]:
+            if p["id"] == patient_id:
+                p["unanswered_questions"] = []
+                break
+        with open(PATIENTS_PATH, "w") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"[clear_unanswered] Failed to clear from file: {e}")
+
 
 def get_history(patient_id: str) -> list[dict]:
     return conversation_store.get(patient_id, [])
@@ -325,6 +391,20 @@ def get_history_endpoint(patient_id: str = Query("P001")):
 
 @app.delete("/history")
 def clear_history_endpoint(patient_id: str = Query("P001")):
+    clear_history(patient_id)
+    return {"status": "cleared", "patient_id": patient_id}
+
+
+@app.get("/questions")
+def get_questions(patient_id: str = Query("P001")):
+    """Return unanswered patient questions flagged for the doctor."""
+    return {"patient_id": patient_id, "questions": get_unanswered(patient_id)}
+
+
+@app.delete("/questions")
+def clear_questions(patient_id: str = Query("P001")):
+    clear_unanswered(patient_id)
+    return {"status": "cleared"}
     """Clear conversation history (new session)."""
     clear_history(patient_id)
     return {"status": "cleared", "patient_id": patient_id}
@@ -429,11 +509,26 @@ async def patient_endpoint(patient_id: str = Query("P001"), audio: UploadFile = 
     answer = clean_llm_answer(raw_answer)
     print(f"[Patient LLM clean] {answer}")
 
-    # 5. Save to history
+    # 5. Detect unanswered questions and flag for doctor
+    is_unanswered = any(marker in answer.lower() for marker in UNANSWERED_MARKERS)
+    if is_unanswered:
+        # Translate question to English so doctor can read it
+        if language_code == "en-IN":
+            english_question = transcript
+        else:
+            try:
+                translate_prompt = "Translate the following text to English. Output only the translation, nothing else."
+                english_question = await async_llm(translate_prompt, transcript, max_tokens=200)
+            except Exception:
+                english_question = transcript  # fallback to original if translation fails
+        flag_unanswered(patient_id, transcript, english_question)
+        print(f"[Unanswered] Flagged for doctor: {english_question}")
+
+    # 6. Save to history
     append_history(patient_id, "user", transcript)
     append_history(patient_id, "assistant", answer)
 
-    # 6. TTS
+    # 7. TTS
     audio_out = await async_tts(answer, language_code)
 
     return {
@@ -441,6 +536,7 @@ async def patient_endpoint(patient_id: str = Query("P001"), audio: UploadFile = 
         "answer": answer,
         "audio_b64": base64.b64encode(audio_out).decode(),
         "language": language_code,
+        "flagged_for_doctor": is_unanswered,
         "turn": len(get_history(patient_id)) // 2,  # which turn number this is
     }
 

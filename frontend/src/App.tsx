@@ -156,6 +156,12 @@ function RoleSelect({ onSelect }: { onSelect: (r: Role) => void }) {
   )
 }
 
+interface UnansweredQuestion {
+  question_original: string
+  question_english: string
+  asked_at: string
+}
+
 // ── Doctor View ───────────────────────────────────────────────────────────────
 
 function DoctorView({ onSwitchRole }: { onSwitchRole: () => void }) {
@@ -165,6 +171,7 @@ function DoctorView({ onSwitchRole }: { onSwitchRole: () => void }) {
   const [transcript, setTranscript] = useState('')
   const [status, setStatus] = useState('')
   const [loading, setLoading] = useState(false)
+  const [unanswered, setUnanswered] = useState<UnansweredQuestion[]>([])
   const rec = useRecorder()
 
   useEffect(() => {
@@ -173,9 +180,29 @@ function DoctorView({ onSwitchRole }: { onSwitchRole: () => void }) {
 
   useEffect(() => {
     if (!selectedId) return
-    setCarePlan(null); setTranscript('')
+    setCarePlan(null); setTranscript(''); setUnanswered([])
     fetch(`/record?patient_id=${selectedId}`).then(r => r.json()).then(setCarePlan).catch(() => setStatus('Could not load care plan'))
+    fetch(`/questions?patient_id=${selectedId}`).then(r => r.json()).then(d => setUnanswered(d.questions || [])).catch(() => {})
   }, [selectedId])
+
+  // Poll for new unanswered questions every 8 seconds
+  useEffect(() => {
+    if (!selectedId) return
+    const interval = setInterval(() => {
+      fetch(`/questions?patient_id=${selectedId}`)
+        .then(r => r.json())
+        .then(d => setUnanswered(d.questions || []))
+        .catch(() => {})
+    }, 8000)
+    return () => clearInterval(interval)
+  }, [selectedId])
+
+  const refreshQuestions = () => {
+    fetch(`/questions?patient_id=${selectedId}`)
+      .then(r => r.json())
+      .then(d => setUnanswered(d.questions || []))
+      .catch(() => {})
+  }
 
   const handleStop = async () => {
     const blob = await rec.stop()
@@ -192,6 +219,11 @@ function DoctorView({ onSwitchRole }: { onSwitchRole: () => void }) {
     } catch (e: any) {
       setStatus('Error: ' + e.message)
     } finally { setLoading(false) }
+  }
+
+  const handleClearQuestions = async () => {
+    await fetch(`/questions?patient_id=${selectedId}`, { method: 'DELETE' })
+    setUnanswered([])
   }
 
   return (
@@ -291,6 +323,43 @@ function DoctorView({ onSwitchRole }: { onSwitchRole: () => void }) {
             </div>
           )}
         </div>
+
+        {/* Unanswered patient questions */}
+        {unanswered.length > 0 && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                <p className="text-sm font-semibold text-amber-400">Patient Questions Needing Your Attention</p>
+                <span className="text-xs bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded-full">{unanswered.length}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={refreshQuestions}
+                  className="text-xs text-slate-500 hover:text-slate-300 border border-slate-700 px-3 py-1 rounded-lg transition-all">
+                  Refresh
+                </button>
+                <button onClick={handleClearQuestions}
+                  className="text-xs text-slate-500 hover:text-red-400 border border-slate-700 px-3 py-1 rounded-lg transition-all">
+                  Clear all
+                </button>
+              </div>
+            </div>
+            <div className="space-y-2">
+              {unanswered.map((q, i) => (
+                <div key={i} className="bg-amber-900/10 border border-amber-700/30 rounded-xl px-4 py-3 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-amber-500 uppercase tracking-wider">Question {i + 1}</p>
+                    <p className="text-xs text-slate-600">{q.asked_at}</p>
+                  </div>
+                  <p className="text-white text-sm font-medium">{q.question_english}</p>
+                  {q.question_original !== q.question_english && (
+                    <p className="text-slate-500 text-xs italic">"{q.question_original}"</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Care plan */}
         {carePlan && (

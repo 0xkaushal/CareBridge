@@ -5,17 +5,19 @@
       "name": "Ravi Kumar",
       "age": 52,
       "preferredLanguage": "hi-IN",
-      "diagnosis": "fever",
+      "diagnosis": "cancer",
       "medicines": [
-        "aspirin"
+        "aspirin",
+        "Dolo"
       ],
-      "dosage": "",
-      "foodInstructions": "",
+      "dosage": "thrice a day",
+      "foodInstructions": "not eat dairy products",
       "restrictions": [
-        "No non-vegetarian food"
+        "No non-vegetarian food",
+        "not eat dairy products"
       ],
       "warningSigns": [],
-      "followUpDate": "",
+      "followUpDate": "29th of July",
       "doctorNote": "Patient is stable. Monitor blood pressure daily at home."
     },
     {
