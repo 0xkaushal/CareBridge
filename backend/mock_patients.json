@@ -5,7 +5,7 @@
       "name": "Ravi Kumar",
       "age": 52,
       "preferredLanguage": "hi-IN",
-      "diagnosis": "cancer",
+      "diagnosis": "fever",
       "medicines": [
         "aspirin",
         "Dolo"
@@ -19,7 +19,8 @@
       "warningSigns": [],
       "followUpDate": "29th of July",
       "phone": "+919121910741",
-      "doctorNote": "Patient is stable. Monitor blood pressure daily at home."
+      "doctorNote": "Patient is stable. Monitor blood pressure daily at home.",
+      "scheduleCallInSeconds": 30
     },
     {
       "id": "P002",

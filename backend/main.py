@@ -789,7 +789,48 @@ async def doctor_endpoint(patient_id: str = Query("P001"), audio: UploadFile = F
     # Clear old conversation history when care plan updates — fresh context
     clear_history(patient_id)
 
-    return {"transcript": transcript, "care_plan": get_patient(patient_id)}
+    # ── Demo: scheduled call ──────────────────────────────────────────────────
+    # If the doctor said "follow-up in 30 seconds", schedule the call automatically.
+    delay = extracted.get("scheduleCallInSeconds")
+    scheduled = False
+    if delay and isinstance(delay, (int, float)) and delay > 0:
+        delay = int(delay)
+        logger.info(f"[Doctor] Scheduling call to {patient['name']} in {delay}s")
+
+        async def _fire_call_later():
+            await asyncio.sleep(delay)
+            logger.info(f"[Scheduled Call] Firing call to {patient['name']} now")
+            try:
+                phone = get_patient(patient_id).get("phone", "")
+                answer_url = f"{PUBLIC_URL}/answer?patient_id={patient_id}"
+                resp = httpx.post(
+                    f"https://api.vobiz.ai/api/v1/Account/{VOBIZ_AUTH_ID}/Call/",
+                    headers={
+                        "X-Auth-ID": VOBIZ_AUTH_ID,
+                        "X-Auth-Token": VOBIZ_AUTH_TOKEN,
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "from": VOBIZ_FROM_NUMBER,
+                        "to": phone,
+                        "answer_url": answer_url,
+                        "answer_method": "POST",
+                    },
+                    timeout=30.0,
+                )
+                resp.raise_for_status()
+                logger.info(f"[Scheduled Call] Done: {resp.json()}")
+            except Exception as e:
+                logger.error(f"[Scheduled Call] Failed: {e}")
+
+        asyncio.create_task(_fire_call_later())
+        scheduled = True
+
+    return {
+        "transcript": transcript,
+        "care_plan": get_patient(patient_id),
+        "scheduled_call_in_seconds": delay if scheduled else None,
+    }
 
 
 @app.post("/patient")

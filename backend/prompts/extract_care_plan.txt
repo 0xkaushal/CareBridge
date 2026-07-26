@@ -8,7 +8,8 @@ Use this exact schema:
   "foodInstructions": "",
   "restrictions": [],
   "warningSigns": [],
-  "followUpDate": ""
+  "followUpDate": "",
+  "scheduleCallInSeconds": null
 }
 
 Rules:
@@ -16,3 +17,5 @@ Rules:
 - If a field is not mentioned, use empty string or empty array.
 - Do NOT include a "preferredLanguage" field. It is managed separately.
 - Do not add any keys not in the schema above.
+- For "scheduleCallInSeconds": if the doctor mentions a follow-up in terms of seconds (e.g. "30 seconds", "in 30 seconds", "next appointment is in 30 seconds", "call in 30 seconds"), set this to that number as an integer. Otherwise set to null.
+- This field is ONLY for demo purposes when the doctor explicitly says seconds. Minutes, hours, days → set to null.
