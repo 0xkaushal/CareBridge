@@ -99,13 +99,13 @@ def sarvam_stt(audio_bytes: bytes, filename: str, language_code: str = "en-IN") 
 
 # ── Sarvam LLM — simple (no history) ─────────────────────────────────────────
 
-def sarvam_llm(system_prompt: str, user_message: str) -> str:
-    """Single-turn LLM call. Used for care plan extraction and summary."""
+def sarvam_llm(system_prompt: str, user_message: str, model: str = "sarvam-105b") -> str:
+    """Single-turn LLM call."""
     resp = httpx.post(
         "https://api.sarvam.ai/v1/chat/completions",
         headers={"api-subscription-key": SARVAM_API_KEY},
         json={
-            "model": "sarvam-30b",
+            "model": model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
@@ -251,9 +251,9 @@ async def async_stt(audio_bytes: bytes, filename: str, language_code: str) -> st
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, partial(sarvam_stt, audio_bytes, filename, language_code))
 
-async def async_llm(system_prompt: str, user_message: str) -> str:
+async def async_llm(system_prompt: str, user_message: str, model: str = "sarvam-105b") -> str:
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, partial(sarvam_llm, system_prompt, user_message))
+    return await loop.run_in_executor(None, partial(sarvam_llm, system_prompt, user_message, model))
 
 async def async_llm_with_history(system_prompt: str, history: list, user_message: str) -> str:
     loop = asyncio.get_event_loop()
@@ -325,17 +325,36 @@ async def doctor_endpoint(patient_id: str = Query("P001"), audio: UploadFile = F
         raise HTTPException(status_code=400, detail="Could not transcribe. Please speak clearly.")
 
     system_prompt = load_prompt("extract_care_plan")
-    raw_json = await async_llm(system_prompt, transcript)
+    raw_json = await async_llm(system_prompt, transcript, model="sarvam-30b")
 
-    print(f"[Doctor LLM raw] {raw_json[:400]}")
+    print(f"[Doctor LLM raw FULL]:\n{raw_json}")
     clean = raw_json.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-    match = re.search(r'\{.*\}', clean, re.DOTALL)
-    if not match:
-        raise HTTPException(status_code=500, detail=f"No JSON in LLM response: {raw_json[:300]}")
-    try:
-        extracted = json.loads(match.group())
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=500, detail=f"JSON parse error: {e}")
+
+    # Find all {...} blocks and pick the last one with actual content (not the empty schema template)
+    matches = list(re.finditer(r'\{.*?\}', clean, re.DOTALL))
+    if not matches:
+        matches = list(re.finditer(r'\{.*\}', clean, re.DOTALL))
+    if not matches:
+        raise HTTPException(status_code=500, detail=f"No JSON in LLM response: {raw_json}")
+
+    extracted = None
+    for m in reversed(matches):
+        try:
+            candidate = json.loads(m.group())
+            # skip the empty schema template — at least one field must be non-empty
+            has_content = any(
+                (isinstance(v, str) and v) or (isinstance(v, list) and v)
+                for v in candidate.values()
+            )
+            if has_content:
+                extracted = candidate
+                print(f"[Doctor JSON parsed]: {extracted}")
+                break
+        except json.JSONDecodeError:
+            continue
+
+    if not extracted:
+        raise HTTPException(status_code=500, detail=f"LLM returned empty care plan. Raw: {raw_json[:300]}")
 
     save_patient(patient_id, extracted)
 

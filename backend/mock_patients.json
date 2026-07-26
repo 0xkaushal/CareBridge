@@ -5,17 +5,15 @@
       "name": "Ravi Kumar",
       "age": 52,
       "preferredLanguage": "hi-IN",
-      "diagnosis": "cancer",
-      "medicines": [
-        "Dolo"
-      ],
-      "dosage": "everyday for next one week",
-      "foodInstructions": "not eat non-veg",
+      "diagnosis": "type 2 diabetes",
+      "medicines": [],
+      "dosage": "",
+      "foodInstructions": "should not have sugar",
       "restrictions": [
-        "non-veg"
+        "should not have sugar"
       ],
       "warningSigns": [],
-      "followUpDate": "29th of July",
+      "followUpDate": "",
       "doctorNote": "Patient is stable. Monitor blood pressure daily at home."
     },
     {
@@ -23,26 +21,17 @@
       "name": "Meena Sharma",
       "age": 34,
       "preferredLanguage": "hi-IN",
-      "diagnosis": "Viral fever with mild dehydration",
+      "diagnosis": "cancer",
       "medicines": [
-        "Paracetamol 650mg",
-        "ORS sachets",
-        "Vitamin C 500mg"
+        "Dolo 500"
       ],
-      "dosage": "Paracetamol every 6 hours only if fever is above 100F. ORS after every loose stool. Vitamin C once daily after food.",
-      "foodInstructions": "Drink at least 3 liters of water daily. Eat light food like khichdi, dal, and fruits. Avoid heavy or spicy food.",
+      "dosage": "every six hours for three days",
+      "foodInstructions": "drink so much of water",
       "restrictions": [
-        "No cold water or cold drinks",
-        "No outside food",
-        "Complete bed rest for 3 days"
+        "avoid masala items"
       ],
-      "warningSigns": [
-        "Fever above 103F",
-        "Vomiting more than 3 times",
-        "No urine for 8 hours",
-        "Rash on body"
-      ],
-      "followUpDate": "5 days from discharge — July 31, 2026",
+      "warningSigns": [],
+      "followUpDate": "",
       "doctorNote": "Rest is critical. Patient should not return to work for at least 3 days."
     }
   ]
