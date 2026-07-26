@@ -358,20 +358,33 @@ async def patient_endpoint(patient_id: str = Query("P001"), audio: UploadFile = 
 
 @app.get("/summary")
 async def summary_endpoint(patient_id: str = Query("P001")):
+    print(f"[Summary] START — patient_id={patient_id}")
     patient = get_patient(patient_id)
     language_code = patient.get("preferredLanguage", "hi-IN")
+    print(f"[Summary] Patient loaded: {patient.get('name')} | language: {language_code}")
 
     if MOCK_MODE:
+        print("[Summary] MOCK MODE — returning mock summary")
         summary_text = mock_summary(patient)
         return {"care_plan": patient, "summary_text": summary_text, "audio_b64": "", "language": language_code}
 
+    print("[Summary] Loading prompt...")
     system_prompt = (
         load_prompt("explain_summary")
         .replace("{care_plan}", json.dumps(patient, ensure_ascii=False))
         .replace("{language}", language_code)
     )
+    print(f"[Summary] Prompt ready ({len(system_prompt)} chars) — calling LLM...")
+
     summary_text = await async_llm(system_prompt, "Please explain the full discharge plan to the patient now.")
+    print(f"[Summary] LLM done — response length: {len(summary_text)} chars")
+    print(f"[Summary] LLM text: {summary_text[:200]}")
+
+    print(f"[Summary] Calling TTS — language: {language_code}...")
     audio_out = await async_tts(summary_text, language_code)
+    print(f"[Summary] TTS done — audio size: {len(audio_out)} bytes")
+
+    print("[Summary] DONE — returning response")
     return {
         "care_plan": patient,
         "summary_text": summary_text,
