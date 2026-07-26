@@ -6,14 +6,27 @@
       "age": 52,
       "preferredLanguage": "hi-IN",
       "phone": "+919121910741",
-      "diagnosis": "",
+      "diagnosis": "type two diabetes",
       "medicines": [],
       "dosage": "",
-      "foodInstructions": "",
+      "foodInstructions": "he should not eat sugar",
       "restrictions": [],
       "warningSigns": [],
-      "followUpDate": "",
-      "doctorNote": ""
+      "followUpDate": "next 40 seconds",
+      "doctorNote": "",
+      "unanswered_questions": [
+        {
+          "question_original": "व्हाट प्रॉब्लम डू आई हैव?",
+          "question_english": "व्हाट प्रॉब्लम डू आई हैव?",
+          "asked_at": "16:09"
+        },
+        {
+          "question_original": "इन हिंदी मुझे कौन सी बीमारी थी? मैं कौन सा खाना खा सकता हूँ?",
+          "question_english": "इन हिंदी मुझे कौन सी बीमारी थी? मैं कौन सा खाना खा सकता हूँ?",
+          "asked_at": "16:22"
+        }
+      ],
+      "scheduleCallInSeconds": 40
     },
     {
       "id": "P002",
