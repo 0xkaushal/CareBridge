@@ -353,11 +353,11 @@ function PatientView({ onSwitchRole }: { onSwitchRole: () => void }) {
   const [carePlan, setCarePlan] = useState<CarePlan | null>(null)
   const [transcript, setTranscript] = useState('')
   const [aiAnswer, setAiAnswer] = useState('')
+  const [lastAudioB64, setLastAudioB64] = useState('')
   const [status, setStatus] = useState('')
   const [loading, setLoading] = useState(false)
   const rec = useRecorder()
 
-  // Once patient logs in, fetch their record
   const handleLogin = (id: string) => {
     setPatientId(id)
     fetch(`/record?patient_id=${id}`)
@@ -369,7 +369,11 @@ function PatientView({ onSwitchRole }: { onSwitchRole: () => void }) {
   const handleStop = async () => {
     if (!patientId) return
     const blob = await rec.stop()
-    setLoading(true); setStatus('Processing your question...')
+    setLoading(true)
+    setStatus('Listening to your question...')
+    setTranscript('')
+    setAiAnswer('')
+    setLastAudioB64('')
     try {
       const form = new FormData()
       form.append('audio', blob, 'patient.webm')
@@ -378,7 +382,8 @@ function PatientView({ onSwitchRole }: { onSwitchRole: () => void }) {
       const data = await res.json()
       setTranscript(data.transcript)
       setAiAnswer(data.answer)
-      setStatus('Answer ready.')
+      setLastAudioB64(data.audio_b64)
+      setStatus('')
       playAudioB64(data.audio_b64)
     } catch (e: any) {
       setStatus('Error: ' + e.message)
@@ -387,23 +392,26 @@ function PatientView({ onSwitchRole }: { onSwitchRole: () => void }) {
 
   const handleExplain = async () => {
     if (!patientId) return
-    setLoading(true); setStatus('Preparing your discharge summary...')
+    setLoading(true)
+    setStatus('Preparing your discharge summary...')
+    setTranscript('')
+    setAiAnswer('')
+    setLastAudioB64('')
     try {
       const res = await fetch(`/summary?patient_id=${patientId}`)
       if (!res.ok) throw new Error(await res.text())
       const data = await res.json()
       setAiAnswer(data.summary_text)
-      setStatus('Summary ready.')
+      setLastAudioB64(data.audio_b64)
+      setStatus('')
       playAudioB64(data.audio_b64)
     } catch (e: any) {
       setStatus('Error: ' + e.message)
     } finally { setLoading(false) }
   }
 
-  // Step 1: ask for patient ID
   if (!patientId) return <PatientLogin onLogin={handleLogin} />
 
-  // Step 2: show their personal view
   return (
     <div className="min-h-screen bg-slate-900 text-white">
       <header className="border-b border-slate-700 px-8 py-5 flex items-center justify-between">
@@ -412,7 +420,7 @@ function PatientView({ onSwitchRole }: { onSwitchRole: () => void }) {
           {carePlan && <p className="text-slate-400 text-sm">Hello, {carePlan.name}</p>}
         </div>
         <div className="flex items-center gap-3">
-          <button onClick={() => { setPatientId(null); setCarePlan(null) }}
+          <button onClick={() => { setPatientId(null); setCarePlan(null); setTranscript(''); setAiAnswer('') }}
             className="text-slate-400 hover:text-white text-sm border border-slate-700 hover:border-slate-500 px-4 py-2 rounded-lg transition-all">
             Change Patient
           </button>
@@ -424,67 +432,108 @@ function PatientView({ onSwitchRole }: { onSwitchRole: () => void }) {
       </header>
 
       <main className="max-w-2xl mx-auto px-6 py-8 space-y-6">
-        {(loading || status) && (
-          <div className="bg-slate-800 border border-slate-700 rounded-xl px-5 py-3 flex items-center gap-3">
-            {loading && <div className="w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />}
-            <p className="text-slate-300 text-sm">{status}</p>
-          </div>
-        )}
 
-        {/* Diagnosis highlight — only their own */}
+        {/* Patient identity card */}
         {carePlan && (
-          <div className="bg-slate-800 rounded-2xl px-6 py-5 flex items-center gap-4">
-            <div className="w-12 h-12 bg-emerald-600 rounded-full flex items-center justify-center text-xl font-bold shrink-0">
+          <div className="bg-slate-800 rounded-2xl px-6 py-4 flex items-center gap-4">
+            <div className="w-11 h-11 bg-emerald-600 rounded-full flex items-center justify-center text-lg font-bold shrink-0">
               {carePlan.name[0]}
             </div>
             <div>
-              <p className="text-white font-semibold text-lg">{carePlan.name}</p>
+              <p className="text-white font-semibold">{carePlan.name}</p>
               <p className="text-slate-400 text-sm">{carePlan.diagnosis}</p>
             </div>
             <div className="ml-auto text-right">
-              <p className="text-xs text-slate-500">Patient ID</p>
+              <p className="text-xs text-slate-500">ID</p>
               <p className="text-slate-300 font-mono font-semibold">{carePlan.id}</p>
             </div>
           </div>
         )}
 
-        {/* Explain To Me — the big moment */}
+        {/* ── ASK A QUESTION — hero section ── */}
         {carePlan && (
-          <button onClick={handleExplain} disabled={loading}
-            className="w-full bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white font-bold px-6 py-6 rounded-2xl text-xl transition-all hover:scale-105 shadow-xl shadow-violet-500/30 flex items-center justify-center gap-3">
-            <span className="text-3xl">✨</span>
-            Explain My Discharge Plan
-          </button>
-        )}
-
-        {/* Ask question */}
-        <section className="bg-slate-800 rounded-2xl p-6 space-y-4">
-          <div>
-            <h2 className="text-lg font-semibold">Ask a Question</h2>
-            <p className="text-slate-400 text-sm">Speak in your language — we'll answer in your language</p>
-          </div>
-          <MicButton recording={rec.recording} onStart={rec.start} onStop={handleStop}
-            label="Ask a Question" color="bg-emerald-600" disabled={!carePlan} />
-          {transcript && (
-            <div className="bg-slate-700 rounded-xl p-4">
-              <p className="text-xs text-slate-400 mb-1 uppercase tracking-wider">Your question</p>
-              <p className="text-slate-100 text-sm">{transcript}</p>
+          <section className="bg-slate-800 rounded-2xl p-6 space-y-5">
+            <div>
+              <h2 className="text-xl font-bold text-white">Ask a Question</h2>
+              <p className="text-slate-400 text-sm mt-1">
+                Press the button, speak in <span className="text-emerald-400 font-medium">
+                  {carePlan.preferredLanguage === 'hi-IN' ? 'Hindi' :
+                   carePlan.preferredLanguage === 'kn-IN' ? 'Kannada' :
+                   carePlan.preferredLanguage === 'ta-IN' ? 'Tamil' : 'your language'}
+                </span>, and CareBridge will answer you in the same language.
+              </p>
             </div>
-          )}
-        </section>
 
-        {/* AI Answer */}
-        {aiAnswer && (
-          <section className="bg-gradient-to-br from-slate-800 to-slate-700 border border-slate-600 rounded-2xl p-6 space-y-2">
-            <p className="text-xs uppercase tracking-widest text-slate-400">CareBridge</p>
-            <p className="text-slate-100 text-lg leading-relaxed">{aiAnswer}</p>
+            {/* Big mic button */}
+            <button
+              onClick={rec.recording ? handleStop : rec.start}
+              disabled={loading}
+              className={`w-full flex flex-col items-center gap-4 py-8 rounded-2xl font-bold text-white text-xl transition-all duration-200
+                ${rec.recording
+                  ? 'bg-red-500 shadow-xl shadow-red-500/40 scale-105'
+                  : loading
+                  ? 'bg-slate-700 opacity-50 cursor-not-allowed'
+                  : 'bg-emerald-600 hover:bg-emerald-500 hover:scale-105 shadow-xl shadow-emerald-500/20'}`}
+            >
+              <span className="text-5xl">{rec.recording ? '⏹' : '🎙'}</span>
+              <span>{rec.recording ? 'Stop — I am done speaking' : 'Tap to Ask a Question'}</span>
+              {rec.recording && (
+                <span className="flex gap-2 items-end h-6">
+                  {[0,1,2,3,4].map(i => (
+                    <span key={i} className="w-1.5 bg-white rounded-full animate-bounce"
+                      style={{ height: `${12 + (i % 3) * 6}px`, animationDelay: `${i * 0.1}s` }} />
+                  ))}
+                </span>
+              )}
+            </button>
+
+            {/* Status */}
+            {(loading || status) && (
+              <div className="flex items-center gap-3 bg-slate-700 rounded-xl px-4 py-3">
+                {loading && <div className="w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin shrink-0" />}
+                <p className="text-slate-300 text-sm">{status || 'Processing...'}</p>
+              </div>
+            )}
+
+            {/* What you said */}
+            {transcript && (
+              <div className="bg-slate-700 rounded-xl p-4">
+                <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">You asked</p>
+                <p className="text-slate-100">{transcript}</p>
+              </div>
+            )}
+
+            {/* AI Answer */}
+            {aiAnswer && (
+              <div className="bg-gradient-to-br from-emerald-900/50 to-slate-800 border border-emerald-700/40 rounded-xl p-5 space-y-3">
+                <p className="text-xs text-emerald-400 uppercase tracking-wider">CareBridge Answer</p>
+                <p className="text-white text-lg leading-relaxed">{aiAnswer}</p>
+                {lastAudioB64 && (
+                  <button
+                    onClick={() => playAudioB64(lastAudioB64)}
+                    className="flex items-center gap-2 text-sm text-emerald-400 hover:text-emerald-300 transition-colors mt-1"
+                  >
+                    <span className="text-lg">🔊</span> Play again
+                  </button>
+                )}
+              </div>
+            )}
           </section>
         )}
 
-        {/* Their care plan only */}
+        {/* Explain To Me — full discharge summary */}
+        {carePlan && (
+          <button onClick={handleExplain} disabled={loading}
+            className="w-full bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white font-bold px-6 py-5 rounded-2xl text-lg transition-all hover:scale-105 shadow-xl shadow-violet-500/30 flex items-center justify-center gap-3">
+            <span className="text-2xl">✨</span>
+            Explain My Full Discharge Plan
+          </button>
+        )}
+
+        {/* Care plan reference */}
         {carePlan && (
           <section className="space-y-3">
-            <h2 className="text-lg font-semibold">Your Care Plan</h2>
+            <h2 className="text-base font-semibold text-slate-400 uppercase tracking-wider">Your Care Plan</h2>
             <CarePlanCard plan={carePlan} />
           </section>
         )}
