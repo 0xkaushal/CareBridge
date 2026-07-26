@@ -5,38 +5,46 @@
       "name": "Ravi Kumar",
       "age": 52,
       "preferredLanguage": "hi-IN",
-      "diagnosis": "fever",
-      "medicines": [
-        "aspirin",
-        "Dolo"
-      ],
-      "dosage": "thrice a day",
-      "foodInstructions": "not eat dairy products",
-      "restrictions": [
-        "No non-vegetarian food",
-        "not eat dairy products"
-      ],
-      "warningSigns": [],
-      "followUpDate": "29th of July",
       "phone": "+919121910741",
-      "doctorNote": "Patient is stable. Monitor blood pressure daily at home.",
-      "scheduleCallInSeconds": 30
-    },
-    {
-      "id": "P002",
-      "name": "Meena Sharma",
-      "age": 34,
-      "preferredLanguage": "te-IN",
-      "diagnosis": "type two diabetes",
-      "medicines": [
-        "metformin"
-      ],
-      "dosage": "once a day",
-      "foodInstructions": "vegetarian only",
+      "diagnosis": "",
+      "medicines": [],
+      "dosage": "",
+      "foodInstructions": "",
       "restrictions": [],
       "warningSigns": [],
       "followUpDate": "",
-      "doctorNote": "Rest is critical. Patient should not return to work for at least 3 days."
+      "doctorNote": ""
+    },
+    {
+      "id": "P002",
+      "name": "Lakshmi Devi",
+      "age": 58,
+      "preferredLanguage": "te-IN",
+      "phone": "+919121910741",
+      "diagnosis": "Type 2 Diabetes with Hypertension",
+      "medicines": [
+        "Metformin 500mg",
+        "Amlodipine 5mg",
+        "Aspirin 75mg"
+      ],
+      "dosage": "Metformin 500mg twice daily after breakfast and dinner. Amlodipine 5mg once daily in the morning. Aspirin 75mg once daily after lunch.",
+      "foodInstructions": "Strictly avoid sugar, sweets, white rice, and fried foods. Eat small meals every 3 hours. Prefer ragi, brown rice, and green vegetables. Drink at least 8 glasses of water daily.",
+      "restrictions": [
+        "No sugar or sweets",
+        "No white rice — switch to brown rice or ragi",
+        "No fried or oily food",
+        "No alcohol",
+        "Avoid stress and heavy physical activity for 2 weeks"
+      ],
+      "warningSigns": [
+        "Sudden dizziness or fainting",
+        "Blood sugar above 250 mg/dL",
+        "Severe headache or blurred vision",
+        "Chest pain or shortness of breath",
+        "Numbness or tingling in hands or feet"
+      ],
+      "followUpDate": "August 5th 2026",
+      "doctorNote": "Patient was admitted for 3 days due to uncontrolled blood sugar (HbA1c 9.2%). Blood pressure was 160/100 on admission, now stable at 130/85. Patient must monitor blood sugar at home every morning before breakfast and log the readings. Bring the log book to the follow-up visit. If blood sugar is above 300 mg/dL on any day, visit the emergency immediately."
     }
   ]
 }
