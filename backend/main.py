@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import base64
 import httpx
@@ -19,32 +20,49 @@ app.add_middleware(
 
 SARVAM_API_KEY = os.environ.get("SARVAM_API_KEY", "")
 MOCK_MODE = os.environ.get("MOCK_MODE", "true").lower() == "true"
-MOCK_PATIENTS_PATH = "mock_patients.json"
+PATIENTS_PATH = "mock_patients.json"
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Patient store (read / write mock_patients.json) ───────────────────────────
+
+def load_all_patients() -> list[dict]:
+    with open(PATIENTS_PATH) as f:
+        return json.load(f)["patients"]
+
+
+def get_patient(patient_id: str) -> dict:
+    for p in load_all_patients():
+        if p["id"] == patient_id:
+            return p
+    raise HTTPException(status_code=404, detail=f"Patient {patient_id} not found")
+
+
+def save_patient(patient_id: str, updated: dict):
+    """Overwrite one patient's record in mock_patients.json."""
+    with open(PATIENTS_PATH) as f:
+        data = json.load(f)
+
+    for i, p in enumerate(data["patients"]):
+        if p["id"] == patient_id:
+            # preserve id, name, age, preferredLanguage — merge updated fields on top
+            merged = {**p, **updated, "id": p["id"], "name": p["name"], "age": p["age"]}
+            data["patients"][i] = merged
+            break
+
+    with open(PATIENTS_PATH, "w") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+# ── Prompts ───────────────────────────────────────────────────────────────────
 
 def load_prompt(name: str) -> str:
     with open(f"prompts/{name}.txt") as f:
         return f.read()
 
 
-def load_mock_patients() -> dict:
-    with open(MOCK_PATIENTS_PATH) as f:
-        data = json.load(f)
-    return {p["id"]: p for p in data["patients"]}
+# ── Sarvam API ────────────────────────────────────────────────────────────────
 
-
-def get_patient(patient_id: str) -> dict:
-    patients = load_mock_patients()
-    if patient_id not in patients:
-        raise HTTPException(status_code=404, detail=f"Patient {patient_id} not found")
-    return patients[patient_id]
-
-
-# ── Sarvam API calls (only used when MOCK_MODE=false) ────────────────────────
-
-def sarvam_stt(audio_bytes: bytes, filename: str, language_code: str = "unknown") -> str:
-    files = {"file": (filename, audio_bytes, "audio/wav")}
+def sarvam_stt(audio_bytes: bytes, filename: str, language_code: str = "en-IN") -> str:
+    files = {"file": (filename, audio_bytes, "audio/webm")}
     data = {"model": "saaras:v3", "language_code": language_code}
     resp = httpx.post(
         "https://api.sarvam.ai/speech-to-text",
@@ -65,13 +83,22 @@ def sarvam_llm(system_prompt: str, user_message: str) -> str:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
             ],
-            "temperature": 0.3,
-            "max_tokens": 512,
+            "temperature": 0.1,
+            "max_tokens": 2048,
         },
         timeout=60.0,
     )
     resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+    data = resp.json()
+    print(f"LLM raw response: {json.dumps(data)[:500]}")
+    message = data.get("choices", [{}])[0].get("message", {})
+    content = message.get("content") or ""
+    # sarvam-30b sometimes puts output in reasoning_content when max_tokens is tight
+    if not content:
+        content = message.get("reasoning_content") or ""
+    if not content:
+        raise HTTPException(status_code=500, detail=f"LLM returned empty content. Full response: {data}")
+    return content
 
 
 def sarvam_tts(text: str, language_code: str = "kn-IN") -> bytes:
@@ -92,34 +119,7 @@ def sarvam_tts(text: str, language_code: str = "kn-IN") -> bytes:
     return base64.b64decode(resp.json()["audios"][0])
 
 
-# ── Mock responses (no API calls) ────────────────────────────────────────────
-
-def mock_answer(question: str, patient: dict) -> str:
-    q = question.lower()
-    plan = patient
-
-    if any(w in q for w in ["medicine", "tablet", "pill", "drug", "paracetamol", "metformin", "ಮಾತ್ರೆ", "दवाई"]):
-        meds = ", ".join(plan.get("medicines", []))
-        return f"Your medicines are: {meds}. {plan.get('dosage', '')}"
-    if any(w in q for w in ["food", "eat", "diet", "ಆಹಾರ", "खाना"]):
-        return plan.get("foodInstructions", "Follow a light and healthy diet.")
-    if any(w in q for w in ["avoid", "restrict", "not", "ಬೇಡ", "नहीं"]):
-        r = ", ".join(plan.get("restrictions", []))
-        return f"Please avoid: {r}"
-    if any(w in q for w in ["follow", "visit", "doctor", "appointment", "ಮರಳಿ", "वापस"]):
-        return f"Your follow-up is: {plan.get('followUpDate', 'as advised by your doctor')}"
-    if any(w in q for w in ["warning", "danger", "emergency", "ಅಪಾಯ", "खतरा"]):
-        w = ", ".join(plan.get("warningSigns", []))
-        return f"Watch out for these warning signs: {w}"
-
-    # Default: summarise
-    meds = ", ".join(plan.get("medicines", []))
-    return (
-        f"You have been diagnosed with {plan.get('diagnosis', 'a condition')}. "
-        f"Your medicines are {meds}. {plan.get('dosage', '')} "
-        f"Follow-up: {plan.get('followUpDate', '')}."
-    )
-
+# ── Mock helpers (no API calls) ───────────────────────────────────────────────
 
 def mock_summary(patient: dict) -> str:
     meds = ", ".join(patient.get("medicines", []))
@@ -127,7 +127,7 @@ def mock_summary(patient: dict) -> str:
     warnings = ", ".join(patient.get("warningSigns", []))
     return (
         f"Hello {patient['name']}, here is your discharge summary. "
-        f"You were treated for {patient['diagnosis']}. "
+        f"You were treated for {patient.get('diagnosis', 'your condition')}. "
         f"Your medicines are {meds}. {patient.get('dosage', '')} "
         f"Regarding food: {patient.get('foodInstructions', '')} "
         f"Please avoid: {restrictions}. "
@@ -146,15 +146,11 @@ def health():
 
 @app.get("/patients")
 def list_patients():
-    """Return all patient IDs and names for the selector."""
-    with open(MOCK_PATIENTS_PATH) as f:
-        data = json.load(f)
-    return [{"id": p["id"], "name": p["name"], "age": p["age"]} for p in data["patients"]]
+    return [{"id": p["id"], "name": p["name"], "age": p["age"]} for p in load_all_patients()]
 
 
 @app.get("/record")
 def get_record(patient_id: str = Query("P001")):
-    """Return structured care plan for a patient."""
     return get_patient(patient_id)
 
 
@@ -163,22 +159,54 @@ async def doctor_endpoint(
     patient_id: str = Query("P001"),
     audio: UploadFile = File(...),
 ):
-    """Doctor voice → updates care plan. In mock mode, just returns existing record."""
-    patient = get_patient(patient_id)
+    """
+    Doctor records voice instructions.
+    1. Sarvam STT → transcript
+    2. Sarvam LLM → structured care plan JSON
+    3. Save to mock_patients.json (overwrites that patient's fields)
+    4. Return transcript + updated care plan
+    """
+    patient = get_patient(patient_id)  # verify patient exists
+    audio_bytes = await audio.read()
 
     if MOCK_MODE:
         return {
-            "transcript": "[Mock] Doctor instructions recorded. Care plan loaded from mock data.",
+            "transcript": "[Mock mode] Voice not sent to Sarvam. Set MOCK_MODE=false to enable.",
             "care_plan": patient,
         }
 
-    audio_bytes = await audio.read()
-    transcript = sarvam_stt(audio_bytes, audio.filename or "doctor.webm", "en-IN")
+    # 1. Transcribe doctor audio (English)
+    transcript = sarvam_stt(audio_bytes, audio.filename or "doctor.webm", language_code="en-IN")
+    print(f"Transcribed doctor audio: {transcript[:200]}")
+    if not transcript:
+        raise HTTPException(status_code=400, detail="Could not transcribe audio. Please speak clearly and try again.")
+
+    # 2. Extract structured care plan from transcript
     system_prompt = load_prompt("extract_care_plan")
     raw_json = sarvam_llm(system_prompt, transcript)
+
+    # 3. Extract JSON — strip fences, then find first {...} block
+    if not raw_json:
+        raise HTTPException(status_code=500, detail="LLM returned empty response.")
+
+    print(f"LLM raw:\n{raw_json}")
     clean = raw_json.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-    care_plan = json.loads(clean)
-    return {"transcript": transcript, "care_plan": care_plan}
+
+    # find first complete JSON object in the string
+    match = re.search(r'\{.*\}', clean, re.DOTALL)
+    if not match:
+        raise HTTPException(status_code=500, detail=f"No JSON found in LLM response: {raw_json[:300]}")
+    try:
+        extracted = json.loads(match.group())
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"JSON parse error: {e}. Raw: {raw_json[:300]}")
+
+    # 4. Write back to mock_patients.json
+    save_patient(patient_id, extracted)
+
+    # 5. Return fresh record
+    updated_patient = get_patient(patient_id)
+    return {"transcript": transcript, "care_plan": updated_patient}
 
 
 @app.post("/patient")
@@ -186,36 +214,38 @@ async def patient_endpoint(
     patient_id: str = Query("P001"),
     audio: UploadFile = File(...),
 ):
-    """Patient voice question → answer using care plan."""
+    """Patient voice question → answer using stored care plan."""
     patient = get_patient(patient_id)
     language_code = patient.get("preferredLanguage", "kn-IN")
 
     if MOCK_MODE:
-        # Simulate a typed question via filename as a hack — just return a canned answer
-        answer = mock_summary(patient)
         return {
-            "transcript": "[Mock] Patient question received.",
-            "answer": answer,
+            "transcript": "[Mock mode] Voice not sent to Sarvam.",
+            "answer": mock_summary(patient),
             "audio_b64": "",
             "language": language_code,
         }
 
     audio_bytes = await audio.read()
-    transcript = sarvam_stt(audio_bytes, audio.filename or "patient.webm", language_code)
+    transcript = sarvam_stt(audio_bytes, audio.filename or "patient.webm", language_code=language_code)
+    if not transcript:
+        raise HTTPException(status_code=400, detail="Could not transcribe your question. Please try again.")
+
     system_prompt = load_prompt("answer_patient").replace("{care_plan}", json.dumps(patient, ensure_ascii=False))
     answer = sarvam_llm(system_prompt, transcript)
-    audio_bytes_out = sarvam_tts(answer, language_code)
+    audio_out = sarvam_tts(answer, language_code)
+
     return {
         "transcript": transcript,
         "answer": answer,
-        "audio_b64": base64.b64encode(audio_bytes_out).decode(),
+        "audio_b64": base64.b64encode(audio_out).decode(),
         "language": language_code,
     }
 
 
 @app.get("/summary")
 def summary_endpoint(patient_id: str = Query("P001")):
-    """Return full care plan + spoken summary."""
+    """Full discharge summary as text + voice."""
     patient = get_patient(patient_id)
     language_code = patient.get("preferredLanguage", "kn-IN")
     summary_text = mock_summary(patient)
@@ -228,10 +258,10 @@ def summary_endpoint(patient_id: str = Query("P001")):
             "language": language_code,
         }
 
-    audio_bytes = sarvam_tts(summary_text, language_code)
+    audio_out = sarvam_tts(summary_text, language_code)
     return {
         "care_plan": patient,
         "summary_text": summary_text,
-        "audio_b64": base64.b64encode(audio_bytes).decode(),
+        "audio_b64": base64.b64encode(audio_out).decode(),
         "language": language_code,
     }

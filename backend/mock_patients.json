@@ -5,13 +5,17 @@
       "name": "Ravi Kumar",
       "age": 52,
       "preferredLanguage": "kn-IN",
-      "diagnosis": "Type 2 Diabetes with mild hypertension",
-      "medicines": ["Metformin 500mg", "Amlodipine 5mg", "Aspirin 75mg"],
-      "dosage": "Metformin after breakfast and dinner. Amlodipine once in the morning. Aspirin once after lunch.",
-      "foodInstructions": "Avoid sugar and white rice. Eat small meals every 3 hours. Prefer ragi, vegetables, and dal.",
-      "restrictions": ["No sweets or sugary drinks", "Avoid fried food", "No alcohol", "Limit salt intake"],
-      "warningSigns": ["Chest pain", "Sudden dizziness", "Blood sugar below 70", "Severe headache"],
-      "followUpDate": "2 weeks from discharge — August 9, 2026",
+      "diagnosis": "type 2 diabetes",
+      "medicines": [
+        "metformin"
+      ],
+      "dosage": "10 days, twice a day",
+      "foodInstructions": "only eat dairy foods",
+      "restrictions": [
+        "only eat dairy foods"
+      ],
+      "warningSigns": [],
+      "followUpDate": "",
       "doctorNote": "Patient is stable. Monitor blood pressure daily at home."
     },
     {
@@ -20,11 +24,24 @@
       "age": 34,
       "preferredLanguage": "hi-IN",
       "diagnosis": "Viral fever with mild dehydration",
-      "medicines": ["Paracetamol 650mg", "ORS sachets", "Vitamin C 500mg"],
+      "medicines": [
+        "Paracetamol 650mg",
+        "ORS sachets",
+        "Vitamin C 500mg"
+      ],
       "dosage": "Paracetamol every 6 hours only if fever is above 100F. ORS after every loose stool. Vitamin C once daily after food.",
       "foodInstructions": "Drink at least 3 liters of water daily. Eat light food like khichdi, dal, and fruits. Avoid heavy or spicy food.",
-      "restrictions": ["No cold water or cold drinks", "No outside food", "Complete bed rest for 3 days"],
-      "warningSigns": ["Fever above 103F", "Vomiting more than 3 times", "No urine for 8 hours", "Rash on body"],
+      "restrictions": [
+        "No cold water or cold drinks",
+        "No outside food",
+        "Complete bed rest for 3 days"
+      ],
+      "warningSigns": [
+        "Fever above 103F",
+        "Vomiting more than 3 times",
+        "No urine for 8 hours",
+        "Rash on body"
+      ],
       "followUpDate": "5 days from discharge — July 31, 2026",
       "doctorNote": "Rest is critical. Patient should not return to work for at least 3 days."
     }
