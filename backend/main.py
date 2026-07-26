@@ -143,17 +143,32 @@ def sarvam_llm_with_history(system_prompt: str, history: list[dict], new_user_me
         "https://api.sarvam.ai/v1/chat/completions",
         headers={"api-subscription-key": SARVAM_API_KEY},
         json={
-            "model": "sarvam-30b",
+            "model": "sarvam-105b",  # better instruction-following, no reasoning bleed
             "messages": messages,
-            "temperature": 0.2,   # slightly higher for natural conversation
-            "max_tokens": 512,    # answers should be short
+            "temperature": 0.2,
+            "max_tokens": 300,  # force short answers
         },
         timeout=60.0,
     )
     resp.raise_for_status()
     data = resp.json()
     message = data.get("choices", [{}])[0].get("message", {})
-    content = message.get("content") or message.get("reasoning_content") or ""
+    content = message.get("content") or ""
+
+    # Strip any chain-of-thought reasoning that leaks through
+    # The actual answer always comes after the last numbered step or "**" block
+    if content:
+        # If model leaked reasoning (contains "Analyze" or numbered steps), extract last paragraph
+        if any(marker in content for marker in ["**Analyze", "1.  **", "2.  **", "Consult the Care"]):
+            # grab everything after the last '---' or last double newline block
+            parts = re.split(r'\n{2,}|\*\*Final Answer\*\*:?|---', content)
+            # take the last non-empty part that looks like a real answer (not a header)
+            for part in reversed(parts):
+                part = part.strip().lstrip('*').strip()
+                if len(part) > 20 and not part.startswith(('1.', '2.', '3.', 'Analyze', 'Consult', 'Synth')):
+                    content = part
+                    break
+
     if not content:
         raise HTTPException(status_code=500, detail=f"LLM empty response: {data}")
     return content
