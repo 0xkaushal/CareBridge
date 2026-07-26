@@ -5,17 +5,17 @@
       "name": "Ravi Kumar",
       "age": 52,
       "preferredLanguage": "hi-IN",
-      "diagnosis": "type 2 diabetes",
+      "diagnosis": "cancer",
       "medicines": [
-        "metformin"
+        "Dolo"
       ],
-      "dosage": "10 days, twice a day",
-      "foodInstructions": "only eat dairy foods",
+      "dosage": "everyday for next one week",
+      "foodInstructions": "not eat non-veg",
       "restrictions": [
-        "only eat dairy foods"
+        "non-veg"
       ],
       "warningSigns": [],
-      "followUpDate": "",
+      "followUpDate": "29th of July",
       "doctorNote": "Patient is stable. Monitor blood pressure daily at home."
     },
     {

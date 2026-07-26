@@ -69,7 +69,7 @@ def save_patient(patient_id: str, updated: dict):
         data = json.load(f)
     for i, p in enumerate(data["patients"]):
         if p["id"] == patient_id:
-            merged = {**p, **updated, "id": p["id"], "name": p["name"], "age": p["age"]}
+            merged = {**p, **updated, "id": p["id"], "name": p["name"], "age": p["age"], "preferredLanguage": p["preferredLanguage"]}
             data["patients"][i] = merged
             break
     with open(PATIENTS_PATH, "w") as f:
@@ -111,7 +111,6 @@ def sarvam_llm(system_prompt: str, user_message: str) -> str:
                 {"role": "user", "content": user_message},
             ],
             "temperature": 0.1,
-            "max_tokens": 2048,
         },
         timeout=60.0,
     )
@@ -145,8 +144,7 @@ def sarvam_llm_with_history(system_prompt: str, history: list[dict], new_user_me
         json={
             "model": "sarvam-105b",  # better instruction-following, no reasoning bleed
             "messages": messages,
-            "temperature": 0.2,
-            "max_tokens": 300,  # force short answers
+            "temperature": 0.2, # force short answers
         },
         timeout=60.0,
     )
@@ -209,6 +207,42 @@ def sarvam_tts(text: str, language_code: str = "hi-IN") -> bytes:
         resp.raise_for_status()
         audio_parts.append(base64.b64decode(resp.json()["audios"][0]))
     return b"".join(audio_parts)
+
+
+# ── Strip reasoning leakage from LLM output ──────────────────────────────────
+
+def clean_llm_answer(text: str) -> str:
+    """
+    Remove chain-of-thought reasoning that leaks into the content field.
+    The model sometimes outputs numbered analysis steps before the actual answer.
+    We extract only the final spoken answer.
+    """
+    if not text:
+        return text
+
+    # If it contains reasoning markers, extract the last clean paragraph
+    reasoning_markers = [
+        "**Analyze", "1.  **", "2.  **", "3.  **",
+        "Consult the Care", "Synthesize", "**Final Answer",
+        "The user's question", "This translates to",
+    ]
+    if any(marker in text for marker in reasoning_markers):
+        # Split on double newlines or section markers
+        parts = re.split(r'\n{2,}', text)
+        # Walk from the end, find first part that looks like a real answer
+        for part in reversed(parts):
+            part = part.strip()
+            # Strip markdown bold markers
+            part = re.sub(r'\*+', '', part).strip()
+            # Skip reasoning headers and short fragments
+            if (len(part) > 15
+                and not re.match(r'^\d+\.', part)
+                and not any(m.replace('**','') in part for m in reasoning_markers)):
+                print(f"[clean_llm_answer] Extracted: {part[:100]}")
+                return part
+
+    # No reasoning detected — return as-is but strip markdown
+    return re.sub(r'\*+', '', text).strip()
 
 
 # ── Async wrappers (run blocking httpx in thread pool) ───────────────────────
@@ -352,8 +386,10 @@ async def patient_endpoint(patient_id: str = Query("P001"), audio: UploadFile = 
     history = get_history(patient_id)
 
     # 4. LLM with memory
-    answer = await async_llm_with_history(system_prompt, history, transcript)
-    print(f"[Patient LLM] {answer}")
+    raw_answer = await async_llm_with_history(system_prompt, history, transcript)
+    print(f"[Patient LLM raw] {raw_answer}")
+    answer = clean_llm_answer(raw_answer)
+    print(f"[Patient LLM clean] {answer}")
 
     # 5. Save to history
     append_history(patient_id, "user", transcript)

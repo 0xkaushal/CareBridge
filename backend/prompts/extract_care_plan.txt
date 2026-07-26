@@ -8,11 +8,11 @@ Use this exact schema:
   "foodInstructions": "",
   "restrictions": [],
   "warningSigns": [],
-  "followUpDate": "",
-  "preferredLanguage": "kn-IN"
+  "followUpDate": ""
 }
 
 Rules:
 - Output ONLY the JSON object. Nothing before it. Nothing after it.
 - If a field is not mentioned, use empty string or empty array.
+- Do NOT include a "preferredLanguage" field. It is managed separately.
 - Do not add any keys not in the schema above.
