@@ -69,8 +69,27 @@ def save_patient(patient_id: str, updated: dict):
         data = json.load(f)
     for i, p in enumerate(data["patients"]):
         if p["id"] == patient_id:
-            merged = {**p, **updated, "id": p["id"], "name": p["name"], "age": p["age"], "preferredLanguage": p["preferredLanguage"]}
+            merged = dict(p)  # start from existing record
+            for key, new_val in updated.items():
+                # skip protected identity fields
+                if key in ("id", "name", "age", "preferredLanguage"):
+                    continue
+                old_val = p.get(key)
+                if isinstance(new_val, list):
+                    if new_val:  # new list has items — append unique entries
+                        existing = old_val if isinstance(old_val, list) else []
+                        combined = existing + [v for v in new_val if v not in existing]
+                        merged[key] = combined
+                    # else: new list is empty — keep old value
+                elif isinstance(new_val, str):
+                    if new_val.strip():  # new string is non-empty — overwrite
+                        merged[key] = new_val
+                    # else: new string is empty — keep old value
+                else:
+                    if new_val:
+                        merged[key] = new_val
             data["patients"][i] = merged
+            print(f"[save_patient] Merged record for {patient_id}: {merged}")
             break
     with open(PATIENTS_PATH, "w") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)

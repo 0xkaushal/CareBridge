@@ -6,11 +6,13 @@
       "age": 52,
       "preferredLanguage": "hi-IN",
       "diagnosis": "fever",
-      "medicines": [],
+      "medicines": [
+        "aspirin"
+      ],
       "dosage": "",
-      "foodInstructions": "eat liquid contents mostly",
+      "foodInstructions": "",
       "restrictions": [
-        "non-veg"
+        "No non-vegetarian food"
       ],
       "warningSigns": [],
       "followUpDate": "",
