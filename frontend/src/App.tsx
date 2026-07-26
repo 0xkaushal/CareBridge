@@ -379,32 +379,44 @@ function PatientLogin({ onLogin }: { onLogin: (id: string) => void }) {
 
 // ── Patient View ──────────────────────────────────────────────────────────────
 
+interface HistoryTurn { role: 'user' | 'assistant'; content: string }
+
 function PatientView({ onSwitchRole }: { onSwitchRole: () => void }) {
   const [patientId, setPatientId] = useState<string | null>(null)
   const [carePlan, setCarePlan] = useState<CarePlan | null>(null)
-  const [transcript, setTranscript] = useState('')
-  const [aiAnswer, setAiAnswer] = useState('')
+  const [history, setHistory] = useState<HistoryTurn[]>([])
   const [lastAudioB64, setLastAudioB64] = useState('')
   const [status, setStatus] = useState('')
   const [loading, setLoading] = useState(false)
   const rec = useRecorder()
+  const bottomRef = useRef<HTMLDivElement>(null)
 
   const handleLogin = (id: string) => {
     setPatientId(id)
     fetch(`/record?patient_id=${id}`).then(r => r.json()).then(setCarePlan).catch(() => setStatus('Could not load care plan'))
+    // load existing history if any
+    fetch(`/history?patient_id=${id}`).then(r => r.json()).then(d => setHistory(d.history || [])).catch(() => {})
   }
+
+  // auto-scroll to bottom when history updates
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [history])
 
   const handleStop = async () => {
     if (!patientId) return
     const blob = await rec.stop()
-    setLoading(true); setStatus('Listening...'); setTranscript(''); setAiAnswer(''); setLastAudioB64('')
+    setLoading(true); setStatus('Listening...'); setLastAudioB64('')
     try {
       const form = new FormData()
       form.append('audio', blob, 'patient.webm')
       const res = await fetch(`/patient?patient_id=${patientId}`, { method: 'POST', body: form })
       if (!res.ok) throw new Error(await res.text())
       const data = await res.json()
-      setTranscript(data.transcript); setAiAnswer(data.answer); setLastAudioB64(data.audio_b64); setStatus('')
+      // update local history from backend (source of truth)
+      setHistory(h => [...h, { role: 'user', content: data.transcript }, { role: 'assistant', content: data.answer }])
+      setLastAudioB64(data.audio_b64)
+      setStatus('')
       playAudioB64(data.audio_b64)
     } catch (e: any) { setStatus('Error: ' + e.message) }
     finally { setLoading(false) }
@@ -412,21 +424,29 @@ function PatientView({ onSwitchRole }: { onSwitchRole: () => void }) {
 
   const handleExplain = async () => {
     if (!patientId) return
-    setLoading(true); setStatus('Preparing your summary...'); setTranscript(''); setAiAnswer(''); setLastAudioB64('')
+    setLoading(true); setStatus('Preparing your summary...'); setLastAudioB64('')
     try {
       const res = await fetch(`/summary?patient_id=${patientId}`)
       if (!res.ok) throw new Error(await res.text())
       const data = await res.json()
-      setAiAnswer(data.summary_text); setLastAudioB64(data.audio_b64); setStatus('')
+      setHistory(h => [...h, { role: 'assistant', content: data.summary_text }])
+      setLastAudioB64(data.audio_b64)
+      setStatus('')
       playAudioB64(data.audio_b64)
     } catch (e: any) { setStatus('Error: ' + e.message) }
     finally { setLoading(false) }
   }
 
+  const handleClearHistory = async () => {
+    if (!patientId) return
+    await fetch(`/history?patient_id=${patientId}`, { method: 'DELETE' })
+    setHistory([])
+  }
+
   if (!patientId) return <PatientLogin onLogin={handleLogin} />
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-white">
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-white flex flex-col">
       {/* Header */}
       <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur px-6 py-4 flex items-center justify-between sticky top-0 z-10">
         <div className="flex items-center gap-3">
@@ -437,7 +457,13 @@ function PatientView({ onSwitchRole }: { onSwitchRole: () => void }) {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={() => { setPatientId(null); setCarePlan(null); setTranscript(''); setAiAnswer('') }}
+          {history.length > 0 && (
+            <button onClick={handleClearHistory}
+              className="text-slate-500 hover:text-red-400 text-xs bg-slate-800 border border-slate-700 px-3 py-1.5 rounded-lg transition-all">
+              Clear Chat
+            </button>
+          )}
+          <button onClick={() => { setPatientId(null); setCarePlan(null); setHistory([]) }}
             className="text-slate-400 hover:text-white text-sm bg-slate-800 hover:bg-slate-700 border border-slate-700 px-3 py-1.5 rounded-lg transition-all">
             Change
           </button>
@@ -448,23 +474,69 @@ function PatientView({ onSwitchRole }: { onSwitchRole: () => void }) {
         </div>
       </header>
 
-      <main className="max-w-xl mx-auto px-5 py-7 space-y-5">
+      <main className="max-w-xl mx-auto w-full px-5 py-6 flex flex-col gap-5 flex-1">
 
         {/* Patient card */}
         {carePlan && (
           <div className="bg-gradient-to-r from-emerald-900/30 to-slate-800/50 border border-emerald-700/30 rounded-2xl px-5 py-4 flex items-center gap-4">
-            <div className="w-12 h-12 rounded-full bg-emerald-600 flex items-center justify-center text-lg font-bold shrink-0 shadow-lg shadow-emerald-500/20">
+            <div className="w-11 h-11 rounded-full bg-emerald-600 flex items-center justify-center text-lg font-bold shrink-0">
               {carePlan.name[0]}
             </div>
             <div className="flex-1 min-w-0">
-              <p className="font-bold text-white text-lg">{carePlan.name}</p>
+              <p className="font-bold text-white">{carePlan.name}</p>
               <p className="text-emerald-300/70 text-sm truncate">{carePlan.diagnosis}</p>
             </div>
-            <div className="text-right shrink-0">
-              <p className="text-xs text-slate-500 mb-0.5">Language</p>
-              <span className="text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-full">
-                {langName(carePlan.preferredLanguage)}
-              </span>
+            <span className="text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-full shrink-0">
+              {langName(carePlan.preferredLanguage)}
+            </span>
+          </div>
+        )}
+
+        {/* Explain button */}
+        {carePlan && (
+          <button onClick={handleExplain} disabled={loading}
+            className="w-full group bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 disabled:opacity-50 text-white font-bold px-6 py-4 rounded-2xl text-base transition-all hover:scale-[1.02] shadow-xl shadow-violet-500/20 flex items-center justify-center gap-3">
+            <span className="text-xl group-hover:scale-110 transition-transform">✨</span>
+            Explain My Full Discharge Plan
+          </button>
+        )}
+
+        {/* ── Conversation thread ── */}
+        {history.length > 0 && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">Conversation</p>
+              <span className="text-xs text-slate-600">· {Math.ceil(history.length / 2)} turn{history.length > 2 ? 's' : ''}</span>
+            </div>
+
+            <div className="space-y-2">
+              {history.map((turn, i) => (
+                <div key={i} className={`flex gap-3 ${turn.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  {turn.role === 'assistant' && (
+                    <div className="w-7 h-7 rounded-full bg-emerald-600 flex items-center justify-center text-xs shrink-0 mt-0.5">✦</div>
+                  )}
+                  <div className={`max-w-[85%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${
+                    turn.role === 'user'
+                      ? 'bg-slate-700 text-slate-100 rounded-tr-sm'
+                      : 'bg-emerald-900/40 border border-emerald-700/30 text-white rounded-tl-sm'
+                  }`}>
+                    {turn.content}
+                    {/* Play button on last assistant turn */}
+                    {turn.role === 'assistant' && i === history.length - 1 && lastAudioB64 && (
+                      <button onClick={() => playAudioB64(lastAudioB64)}
+                        className="flex items-center gap-1.5 text-emerald-400 hover:text-emerald-300 text-xs mt-2 transition-colors">
+                        <span>🔊</span> Play
+                      </button>
+                    )}
+                  </div>
+                  {turn.role === 'user' && (
+                    <div className="w-7 h-7 rounded-full bg-slate-600 flex items-center justify-center text-xs shrink-0 mt-0.5">
+                      {carePlan?.name[0] ?? 'P'}
+                    </div>
+                  )}
+                </div>
+              ))}
+              <div ref={bottomRef} />
             </div>
           </div>
         )}
@@ -479,78 +551,36 @@ function PatientView({ onSwitchRole }: { onSwitchRole: () => void }) {
           </div>
         )}
 
-        {/* Ask a Question — hero */}
+        {/* Mic button — sticky at bottom */}
         {carePlan && (
-          <div className="bg-slate-800/50 border border-slate-700/50 rounded-2xl p-5 space-y-4">
-            <div>
-              <h2 className="text-lg font-bold text-white">Ask a Question</h2>
-              <p className="text-slate-400 text-sm mt-0.5">
-                Speak in <span className="text-emerald-400 font-medium">{langName(carePlan.preferredLanguage)}</span> — CareBridge will answer in the same language
-              </p>
-            </div>
-
+          <div className="sticky bottom-5">
             <button
               onClick={rec.recording ? handleStop : rec.start}
               disabled={loading}
-              className={`w-full flex flex-col items-center gap-3 py-8 rounded-xl font-bold text-white transition-all duration-200
+              className={`w-full flex items-center justify-center gap-4 py-5 rounded-2xl font-bold text-white text-lg transition-all duration-200
                 ${rec.recording
                   ? 'bg-red-500/90 shadow-lg shadow-red-500/30 scale-[1.02]'
                   : loading
                   ? 'bg-slate-700/40 opacity-50 cursor-not-allowed'
-                  : 'bg-emerald-600 hover:bg-emerald-500 hover:scale-[1.02] shadow-lg shadow-emerald-500/20'}`}
+                  : 'bg-emerald-600 hover:bg-emerald-500 hover:scale-[1.02] shadow-xl shadow-emerald-500/20'}`}
             >
-              <span className="text-5xl">{rec.recording ? '⏹' : '🎙'}</span>
-              <span>{rec.recording ? 'Tap to stop' : 'Tap & Speak'}</span>
+              <span className="text-3xl">{rec.recording ? '⏹' : '🎙'}</span>
+              <span>{rec.recording ? 'Tap to stop' : history.length === 0 ? 'Tap & Speak' : 'Ask another question'}</span>
               {rec.recording && (
-                <span className="flex gap-1.5 items-end h-5">
+                <span className="flex gap-1 items-end h-5">
                   {[0,1,2,3,4].map(i => (
-                    <span key={i} className="w-1.5 bg-white/70 rounded-full animate-bounce"
-                      style={{ height: `${10 + (i % 3) * 6}px`, animationDelay: `${i * 0.1}s` }} />
+                    <span key={i} className="w-1 bg-white/70 rounded-full animate-bounce"
+                      style={{ height: `${8 + (i % 3) * 5}px`, animationDelay: `${i * 0.1}s` }} />
                   ))}
                 </span>
               )}
             </button>
-
-            {transcript && (
-              <div className="bg-slate-900/50 border border-slate-700/30 rounded-xl px-4 py-3 flex gap-3">
-                <span className="text-slate-500 text-lg shrink-0">💬</span>
-                <div>
-                  <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">You asked</p>
-                  <p className="text-slate-200 text-sm">{transcript}</p>
-                </div>
-              </div>
-            )}
-
-            {aiAnswer && (
-              <div className="bg-gradient-to-br from-emerald-900/30 to-slate-900/50 border border-emerald-700/30 rounded-xl p-4 space-y-3">
-                <div className="flex items-center gap-2">
-                  <div className="w-5 h-5 rounded-full bg-emerald-500 flex items-center justify-center text-xs">✓</div>
-                  <p className="text-xs font-semibold text-emerald-400 uppercase tracking-wider">CareBridge</p>
-                </div>
-                <p className="text-white text-base leading-relaxed">{aiAnswer}</p>
-                {lastAudioB64 && (
-                  <button onClick={() => playAudioB64(lastAudioB64)}
-                    className="flex items-center gap-2 text-emerald-400 hover:text-emerald-300 text-sm transition-colors bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/20 rounded-lg px-3 py-1.5">
-                    <span>🔊</span> Play again
-                  </button>
-                )}
-              </div>
-            )}
           </div>
         )}
 
-        {/* Explain To Me */}
+        {/* Care plan — collapsed at bottom */}
         {carePlan && (
-          <button onClick={handleExplain} disabled={loading}
-            className="w-full group bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 disabled:opacity-50 text-white font-bold px-6 py-5 rounded-2xl text-lg transition-all hover:scale-[1.02] shadow-xl shadow-violet-500/20 flex items-center justify-center gap-3">
-            <span className="text-2xl group-hover:scale-110 transition-transform">✨</span>
-            Explain My Full Discharge Plan
-          </button>
-        )}
-
-        {/* Care plan */}
-        {carePlan && (
-          <div className="space-y-3 pb-8">
+          <div className="space-y-3 pb-4">
             <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">Your Care Plan</p>
             <CarePlanCard plan={carePlan} />
           </div>
