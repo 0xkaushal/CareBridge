@@ -2,10 +2,13 @@ import os
 import re
 import json
 import base64
+import struct
 import asyncio
+from loguru import logger
 import httpx
 from functools import partial
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -23,6 +26,12 @@ app.add_middleware(
 SARVAM_API_KEY = os.environ.get("SARVAM_API_KEY", "")
 MOCK_MODE = os.environ.get("MOCK_MODE", "true").lower() == "true"
 PATIENTS_PATH = "mock_patients.json"
+
+# ── Vobiz config ──────────────────────────────────────────────────────────────
+VOBIZ_AUTH_ID = os.environ.get("VOBIZ_AUTH_ID", "")
+VOBIZ_AUTH_TOKEN = os.environ.get("VOBIZ_AUTH_TOKEN", "")
+VOBIZ_FROM_NUMBER = os.environ.get("VOBIZ_FROM_NUMBER", "")  # Your Vobiz DID number
+PUBLIC_URL = os.environ.get("PUBLIC_URL", "")                # ngrok/production URL (https://...)
 
 # ── In-memory conversation history ───────────────────────────────────────────
 # Keyed by patient_id. Each entry is a list of {role, content} dicts.
@@ -371,6 +380,326 @@ def mock_summary(patient: dict) -> str:
 @app.get("/health")
 def health():
     return {"status": "ok", "mock_mode": MOCK_MODE}
+
+
+@app.post("/call")
+async def call_patient(patient_id: str = Query("P001")):
+    """
+    Trigger an outbound call to the patient via Vobiz.
+    Vobiz dials the patient's number; when answered it fetches /answer which
+    returns XML pointing the audio stream at /ws where the Sarvam bot runs.
+
+    Requires in .env:
+    - VOBIZ_AUTH_ID, VOBIZ_AUTH_TOKEN  — from console.vobiz.ai → Account Settings
+    - VOBIZ_FROM_NUMBER                — your purchased Vobiz DID (e.g. +918065XXXXXX)
+    - PUBLIC_URL                       — publicly reachable base URL (ngrok or production)
+    """
+    patient = get_patient(patient_id)
+    phone = patient.get("phone", "")
+    if not phone:
+        raise HTTPException(status_code=400, detail=f"No phone number for patient {patient_id}")
+
+    if not all([VOBIZ_AUTH_ID, VOBIZ_AUTH_TOKEN, VOBIZ_FROM_NUMBER, PUBLIC_URL]):
+        raise HTTPException(
+            status_code=500,
+            detail="Vobiz credentials not configured. Set VOBIZ_AUTH_ID, VOBIZ_AUTH_TOKEN, VOBIZ_FROM_NUMBER, PUBLIC_URL in .env"
+        )
+
+    answer_url = f"{PUBLIC_URL}/answer?patient_id={patient_id}"
+
+    loop = asyncio.get_event_loop()
+    def make_call():
+        resp = httpx.post(
+            f"https://api.vobiz.ai/api/v1/Account/{VOBIZ_AUTH_ID}/Call/",
+            headers={
+                "X-Auth-ID": VOBIZ_AUTH_ID,
+                "X-Auth-Token": VOBIZ_AUTH_TOKEN,
+                "Content-Type": "application/json",
+            },
+            json={
+                "from": VOBIZ_FROM_NUMBER,
+                "to": phone,
+                "answer_url": answer_url,
+                "answer_method": "POST",
+            },
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    result = await loop.run_in_executor(None, make_call)
+    logger.info(f"[Vobiz] Outbound call initiated for {patient['name']} ({phone}): {result}")
+    return {"status": "calling", "patient": patient["name"], "phone": phone, "vobiz": result}
+
+
+@app.post("/answer")
+async def vobiz_answer(patient_id: str = Query("P001")):
+    """
+    Vobiz calls this URL when the patient picks up.
+    Returns VoiceXML that streams bidirectional audio (L16 16kHz) to /ws.
+    """
+    ws_url = PUBLIC_URL.replace("https://", "wss://").replace("http://", "ws://")
+    # Strip trailing slash to avoid double slash
+    ws_url = ws_url.rstrip("/")
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Stream
+        bidirectional="true"
+        keepCallAlive="true"
+        contentType="audio/x-l16;rate=16000">{ws_url}/ws?patient_id={patient_id}</Stream>
+</Response>"""
+    return Response(content=xml, media_type="application/xml")
+
+
+@app.websocket("/ws")
+async def vobiz_ws(websocket: WebSocket, patient_id: str = Query("P001")):
+    """
+    Bidirectional audio WebSocket — Vobiz sends JSON events here.
+
+    INBOUND  (Vobiz → us):
+      {"event":"start",  "start":{"streamId":"...", "mediaFormat":{"sampleRate":16000}}}
+      {"event":"media",  "media":{"payload":"<base64 L16 PCM>"}}
+
+    OUTBOUND (us → Vobiz):
+      {"event":"playAudio", "streamId":"...", "media":{"contentType":"audio/x-l16","sampleRate":16000,"payload":"<base64 L16 PCM>"}}
+      {"event":"checkpoint","streamId":"...","name":"<label>"}
+    """
+    await websocket.accept()
+    patient = get_patient(patient_id)
+    language_code = patient.get("preferredLanguage", "hi-IN")
+    logger.info(f"[WS] Connected — patient: {patient['name']} lang: {language_code}")
+
+    # Load system prompt
+    try:
+        system_prompt = load_prompt("answer_patient").replace(
+            "{care_plan}", json.dumps(patient, ensure_ascii=False, indent=2)
+        )
+    except Exception:
+        system_prompt = (
+            f"You are CareBridge. Answer ONLY from the patient care plan: "
+            f"{json.dumps(patient, ensure_ascii=False)}. Respond in the patient's preferred language."
+        )
+
+    stream_id = None
+    stream_sample_rate = 16000
+    audio_buffer = bytearray()
+    # 3 seconds of L16 16kHz mono = 96000 bytes
+    CHUNK_THRESHOLD = 96000
+    checkpoint_counter = 0
+
+    try:
+        while True:
+            try:
+                raw = await asyncio.wait_for(websocket.receive_text(), timeout=20.0)
+            except asyncio.TimeoutError:
+                logger.warning("[WS] Timeout — no data for 20s, closing")
+                break
+
+            try:
+                msg = json.loads(raw)
+            except Exception:
+                logger.warning(f"[WS] Non-JSON message: {raw[:100]}")
+                continue
+
+            event = msg.get("event", "")
+            logger.debug(f"[WS] Event: {event}")
+
+            if event == "start":
+                start_data = msg.get("start", {})
+                stream_id = start_data.get("streamId", "")
+                fmt = start_data.get("mediaFormat", {})
+                stream_sample_rate = fmt.get("sampleRate", 16000)
+                logger.info(f"[WS] Stream started — streamId: {stream_id}, format: {fmt}")
+
+                # Send greeting NOW (after receiving start, so Vobiz is ready)
+                greeting_text = _build_greeting(patient, language_code)
+                logger.info(f"[WS] Sending greeting: {greeting_text[:60]}")
+                try:
+                    greeting_audio = await async_tts(greeting_text, language_code)
+                    checkpoint_counter += 1
+                    await _send_audio(websocket, greeting_audio, stream_id, stream_sample_rate, f"greeting-{checkpoint_counter}")
+                    logger.info(f"[WS] Greeting sent ({len(greeting_audio)} bytes)")
+                except Exception as e:
+                    logger.error(f"[WS] Greeting failed: {e}")
+
+            elif event == "media":
+                payload_b64 = msg.get("media", {}).get("payload", "")
+                if payload_b64:
+                    chunk = base64.b64decode(payload_b64)
+                    audio_buffer.extend(chunk)
+
+                    if len(audio_buffer) >= CHUNK_THRESHOLD:
+                        buf_copy = bytes(audio_buffer)
+                        audio_buffer.clear()
+                        checkpoint_counter += 1
+                        cp = checkpoint_counter
+                        await _process_audio(
+                            websocket, buf_copy, patient_id,
+                            language_code, system_prompt, patient,
+                            stream_id, stream_sample_rate, f"turn-{cp}"
+                        )
+
+            elif event == "playedStream":
+                logger.info(f"[WS] Checkpoint ack: {msg.get('name')}")
+
+            elif event == "clearedAudio":
+                logger.info("[WS] Audio cleared")
+
+    except WebSocketDisconnect:
+        logger.info(f"[WS] Patient {patient['name']} disconnected")
+    except Exception as e:
+        logger.error(f"[WS] Error: {e}", exc_info=True)
+    finally:
+        logger.info("[WS] Session ended")
+
+
+def _build_greeting(patient: dict, language_code: str) -> str:
+    name = patient.get("name", "")
+    followup = patient.get("followUpDate", "")
+    greetings = {
+        "kn-IN": f"ನಮಸ್ಕಾರ {name}. ನಾನು CareBridge. ನಿಮ್ಮ ಫಾಲೋ-ಅಪ್ {followup} ರಂದು ಇದೆ. ಯಾವುದಾದರೂ ಪ್ರಶ್ನೆ ಇದ್ದರೆ ಕೇಳಿ.",
+        "hi-IN": f"नमस्ते {name}। मैं CareBridge हूँ। आपका follow-up {followup} को है। कोई सवाल हो तो पूछें।",
+        "ta-IN": f"வணக்கம் {name}. நான் CareBridge. உங்கள் follow-up {followup} அன்று உள்ளது.",
+        "te-IN": f"నమస్కారం {name}. నేను CareBridge. మీ follow-up {followup} న ఉంది.",
+        "en-IN": f"Hello {name}, this is CareBridge. Your follow-up is on {followup}. Any questions?",
+    }
+    return greetings.get(language_code, greetings["hi-IN"])
+
+
+def _wav_to_pcm_16k(wav_bytes: bytes, target_rate: int = 16000) -> bytes:
+    """
+    Extract raw L16 PCM from a WAV file and resample to target_rate if needed.
+    Sarvam TTS returns WAV at 24000 Hz — Vobiz stream expects 16000 Hz.
+    Simple linear decimation (good enough for voice).
+    """
+    if len(wav_bytes) < 44:
+        return wav_bytes
+
+    # Parse WAV header
+    try:
+        riff, size, wave = struct.unpack('<4sI4s', wav_bytes[:12])
+        if riff != b'RIFF' or wave != b'WAVE':
+            return wav_bytes  # not a WAV, return as-is
+
+        # Find fmt chunk
+        offset = 12
+        src_rate = 24000
+        channels = 1
+        bits = 16
+        while offset < len(wav_bytes) - 8:
+            chunk_id = wav_bytes[offset:offset+4]
+            chunk_size = struct.unpack('<I', wav_bytes[offset+4:offset+8])[0]
+            if chunk_id == b'fmt ':
+                fmt = struct.unpack('<HHIIHH', wav_bytes[offset+8:offset+24])
+                channels = fmt[1]
+                src_rate = fmt[2]
+                bits = fmt[5]
+            elif chunk_id == b'data':
+                pcm = wav_bytes[offset+8:offset+8+chunk_size]
+                break
+            offset += 8 + chunk_size
+        else:
+            return wav_bytes[44:]  # fallback: strip 44-byte header
+    except Exception:
+        return wav_bytes[44:]
+
+    if src_rate == target_rate:
+        return pcm
+
+    # Simple integer decimation / interpolation for voice quality
+    import audioop
+    try:
+        # Convert to mono if stereo
+        if channels == 2:
+            pcm, _ = audioop.tomono(pcm, bits // 8, 0.5, 0.5)
+        resampled, _ = audioop.ratecv(pcm, bits // 8, 1, src_rate, target_rate, None)
+        return resampled
+    except Exception as e:
+        logger.warning(f"[resample] audioop failed ({e}), using raw pcm")
+        return pcm
+
+
+async def _send_audio(
+    websocket: WebSocket,
+    wav_bytes: bytes,
+    stream_id: str,
+    sample_rate: int = 16000,
+    checkpoint_name: str = "ck",
+):
+    """Convert WAV → L16 PCM at stream_rate, send playAudio + checkpoint to Vobiz."""
+    pcm = _wav_to_pcm_16k(wav_bytes, target_rate=sample_rate)
+    payload_b64 = base64.b64encode(pcm).decode()
+
+    play_event = {
+        "event": "playAudio",
+        "streamId": stream_id,
+        "media": {
+            "contentType": "audio/x-l16",
+            "sampleRate": sample_rate,
+            "payload": payload_b64,
+        }
+    }
+    await websocket.send_text(json.dumps(play_event))
+
+    # Checkpoint so Vobiz acks playback
+    ck_event = {
+        "event": "checkpoint",
+        "streamId": stream_id,
+        "name": checkpoint_name,
+    }
+    await websocket.send_text(json.dumps(ck_event))
+    logger.info(f"[WS] playAudio sent — {len(pcm)} PCM bytes, checkpoint: {checkpoint_name}")
+
+
+def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 16000, channels: int = 1, bit_depth: int = 16) -> bytes:
+    """Wrap raw L16 PCM in a WAV header for Sarvam STT."""
+    byte_rate = sample_rate * channels * bit_depth // 8
+    block_align = channels * bit_depth // 8
+    header = struct.pack(
+        '<4sI4s4sIHHIIHH4sI',
+        b'RIFF', 36 + len(pcm_bytes), b'WAVE',
+        b'fmt ', 16, 1, channels, sample_rate, byte_rate, block_align, bit_depth,
+        b'data', len(pcm_bytes)
+    )
+    return header + pcm_bytes
+
+
+async def _process_audio(
+    websocket: WebSocket,
+    pcm_bytes: bytes,
+    patient_id: str,
+    language_code: str,
+    system_prompt: str,
+    patient: dict,
+    stream_id: str,
+    sample_rate: int,
+    checkpoint_name: str,
+):
+    """STT → LLM → TTS pipeline for one buffered audio chunk."""
+    try:
+        # Wrap PCM in WAV for Sarvam STT
+        wav = _pcm_to_wav(pcm_bytes, sample_rate)
+        transcript = await async_stt(wav, "chunk.wav", language_code)
+        if not transcript or len(transcript.strip()) < 2:
+            logger.info("[WS pipeline] Empty transcript — skipping")
+            return
+        logger.info(f"[WS STT] {transcript}")
+
+        # LLM with memory
+        history = get_history(patient_id)
+        raw_answer = await async_llm_with_history(system_prompt, history, transcript)
+        answer = clean_llm_answer(raw_answer)
+        logger.info(f"[WS LLM] {answer}")
+
+        append_history(patient_id, "user", transcript)
+        append_history(patient_id, "assistant", answer)
+
+        # TTS → send back
+        audio_out = await async_tts(answer, language_code)
+        await _send_audio(websocket, audio_out, stream_id, sample_rate, checkpoint_name)
+
+    except Exception as e:
+        logger.error(f"[WS pipeline] Error: {e}", exc_info=True)
 
 
 @app.get("/patients")

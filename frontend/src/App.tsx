@@ -15,6 +15,7 @@ interface CarePlan {
   followUpDate: string
   preferredLanguage: string
   doctorNote?: string
+  phone?: string
 }
 
 interface PatientStub {
@@ -226,6 +227,18 @@ function DoctorView({ onSwitchRole }: { onSwitchRole: () => void }) {
     setUnanswered([])
   }
 
+  const handleCallPatient = async () => {
+    if (!carePlan?.phone) return
+    setStatus(`Calling ${carePlan.name} at ${carePlan.phone}...`)
+    try {
+      const res = await fetch(`/call?patient_id=${selectedId}`, { method: 'POST' })
+      if (!res.ok) throw new Error(await res.text())
+      setStatus(`Call initiated to ${carePlan.name}. Patient's phone will ring shortly.`)
+    } catch (e: any) {
+      setStatus('Call failed: ' + e.message)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-white">
       {/* Header */}
@@ -287,11 +300,19 @@ function DoctorView({ onSwitchRole }: { onSwitchRole: () => void }) {
                 Speaking for <span className="text-blue-400">{carePlan?.name ?? '...'}</span>
               </p>
             </div>
-            {carePlan && (
-              <span className="text-xs bg-blue-500/10 text-blue-400 border border-blue-500/20 px-3 py-1 rounded-full">
-                {langName(carePlan.preferredLanguage)}
-              </span>
-            )}
+            <div className="flex items-center gap-2">
+              {carePlan?.phone && (
+                <button onClick={handleCallPatient} disabled={loading}
+                  className="flex items-center gap-2 bg-green-600 hover:bg-green-500 disabled:opacity-50 text-white text-sm font-semibold px-4 py-2 rounded-xl transition-all hover:scale-105 shadow-lg shadow-green-500/20">
+                  <span>📞</span> Call Patient
+                </button>
+              )}
+              {carePlan && (
+                <span className="text-xs bg-blue-500/10 text-blue-400 border border-blue-500/20 px-3 py-1 rounded-full">
+                  {langName(carePlan.preferredLanguage)}
+                </span>
+              )}
+            </div>
           </div>
 
           <button
