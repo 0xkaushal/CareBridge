@@ -5,12 +5,12 @@
       "name": "Ravi Kumar",
       "age": 52,
       "preferredLanguage": "hi-IN",
-      "diagnosis": "type 2 diabetes",
+      "diagnosis": "fever",
       "medicines": [],
       "dosage": "",
-      "foodInstructions": "should not have sugar",
+      "foodInstructions": "eat liquid contents mostly",
       "restrictions": [
-        "should not have sugar"
+        "non-veg"
       ],
       "warningSigns": [],
       "followUpDate": "",
@@ -20,16 +20,14 @@
       "id": "P002",
       "name": "Meena Sharma",
       "age": 34,
-      "preferredLanguage": "hi-IN",
-      "diagnosis": "cancer",
+      "preferredLanguage": "te-IN",
+      "diagnosis": "type two diabetes",
       "medicines": [
-        "Dolo 500"
+        "metformin"
       ],
-      "dosage": "every six hours for three days",
-      "foodInstructions": "drink so much of water",
-      "restrictions": [
-        "avoid masala items"
-      ],
+      "dosage": "once a day",
+      "foodInstructions": "vegetarian only",
+      "restrictions": [],
       "warningSigns": [],
       "followUpDate": "",
       "doctorNote": "Rest is critical. Patient should not return to work for at least 3 days."
