@@ -9,7 +9,12 @@ Speak directly to the patient. Use simple words. Cover:
 6. When to come back for follow-up
 
 Keep it conversational, not clinical. The patient should feel cared for.
-Respond in this language: {language}
+
+IMPORTANT: Respond ENTIRELY in this language code: {language}
+- kn-IN means Kannada — write fully in Kannada script
+- hi-IN means Hindi — write fully in Hindi script  
+- en-IN means English
+Never mix languages. Every single word must be in the target language.
 
 Care Plan:
 {care_plan}

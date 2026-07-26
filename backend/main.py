@@ -101,22 +101,42 @@ def sarvam_llm(system_prompt: str, user_message: str) -> str:
     return content
 
 
-def sarvam_tts(text: str, language_code: str = "kn-IN") -> bytes:
-    resp = httpx.post(
-        "https://api.sarvam.ai/text-to-speech",
-        headers={"api-subscription-key": SARVAM_API_KEY},
-        json={
-            "inputs": [text],
-            "target_language_code": language_code,
-            "speaker": "priya",
-            "model": "bulbul:v3",
-            "speech_sample_rate": 24000,
-            "enable_preprocessing": True,
-        },
-        timeout=60.0,
-    )
-    resp.raise_for_status()
-    return base64.b64decode(resp.json()["audios"][0])
+def sarvam_tts(text: str, language_code: str = "hi-IN") -> bytes:
+    """TTS with chunking — Sarvam allows max ~500 chars per input."""
+    # Split into sentences, then batch into chunks under 450 chars
+    sentences = [s.strip() for s in re.split(r'(?<=[।.!?])\s+', text) if s.strip()]
+    chunks, current = [], ""
+    for sentence in sentences:
+        if len(current) + len(sentence) + 1 <= 450:
+            current = (current + " " + sentence).strip()
+        else:
+            if current:
+                chunks.append(current)
+            current = sentence[:450]  # hard truncate single monster sentences
+    if current:
+        chunks.append(current)
+    if not chunks:
+        chunks = [text[:450]]
+
+    audio_parts = []
+    for chunk in chunks:
+        resp = httpx.post(
+            "https://api.sarvam.ai/text-to-speech",
+            headers={"api-subscription-key": SARVAM_API_KEY},
+            json={
+                "inputs": [chunk],
+                "target_language_code": language_code,
+                "speaker": "priya",
+                "model": "bulbul:v3",
+                "speech_sample_rate": 24000,
+                "enable_preprocessing": True,
+            },
+            timeout=60.0,
+        )
+        resp.raise_for_status()
+        audio_parts.append(base64.b64decode(resp.json()["audios"][0]))
+
+    return b"".join(audio_parts)
 
 
 # ── Mock helpers (no API calls) ───────────────────────────────────────────────
@@ -244,13 +264,13 @@ async def patient_endpoint(
 
 
 @app.get("/summary")
-def summary_endpoint(patient_id: str = Query("P001")):
-    """Full discharge summary as text + voice."""
+async def summary_endpoint(patient_id: str = Query("P001")):
+    """Full discharge summary as text + voice in patient's language."""
     patient = get_patient(patient_id)
     language_code = patient.get("preferredLanguage", "kn-IN")
-    summary_text = mock_summary(patient)
 
     if MOCK_MODE:
+        summary_text = mock_summary(patient)
         return {
             "care_plan": patient,
             "summary_text": summary_text,
@@ -258,6 +278,13 @@ def summary_endpoint(patient_id: str = Query("P001")):
             "language": language_code,
         }
 
+    # Generate summary IN the patient's language via LLM
+    system_prompt = (
+        load_prompt("explain_summary")
+        .replace("{care_plan}", json.dumps(patient, ensure_ascii=False))
+        .replace("{language}", language_code)
+    )
+    summary_text = sarvam_llm(system_prompt, "Please explain the full discharge plan to the patient now.")
     audio_out = sarvam_tts(summary_text, language_code)
     return {
         "care_plan": patient,
