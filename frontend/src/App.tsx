@@ -1,8 +1,11 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 
-// ── Types ────────────────────────────────────────────────────────────────────
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 interface CarePlan {
+  id: string
+  name: string
+  age: number
   diagnosis: string
   medicines: string[]
   dosage: string
@@ -11,9 +14,16 @@ interface CarePlan {
   warningSigns: string[]
   followUpDate: string
   preferredLanguage: string
+  doctorNote?: string
 }
 
-// ── Voice Recorder Hook ──────────────────────────────────────────────────────
+interface PatientStub {
+  id: string
+  name: string
+  age: number
+}
+
+// ── Voice Recorder Hook ───────────────────────────────────────────────────────
 
 function useRecorder() {
   const [recording, setRecording] = useState(false)
@@ -45,50 +55,44 @@ function useRecorder() {
   return { recording, start, stop }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function playAudioB64(b64: string) {
+  if (!b64) return
   const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
   const blob = new Blob([bytes], { type: 'audio/wav' })
   const url = URL.createObjectURL(blob)
-  const audio = new Audio(url)
-  audio.play()
+  new Audio(url).play()
 }
 
-// ── Sub Components ───────────────────────────────────────────────────────────
+// ── Sub Components ────────────────────────────────────────────────────────────
 
 function MicButton({
-  recording,
-  onStart,
-  onStop,
-  label,
-  color,
+  recording, onStart, onStop, label, color, disabled,
 }: {
   recording: boolean
   onStart: () => void
   onStop: () => void
   label: string
   color: string
+  disabled?: boolean
 }) {
   return (
     <button
       onClick={recording ? onStop : onStart}
-      className={`flex flex-col items-center gap-3 px-10 py-6 rounded-2xl text-white font-semibold text-lg transition-all duration-200 shadow-lg ${
-        recording
-          ? 'bg-red-500 scale-105 shadow-red-500/40'
-          : `${color} hover:scale-105 hover:shadow-xl`
-      }`}
+      disabled={disabled && !recording}
+      className={`flex flex-col items-center gap-3 px-8 py-5 rounded-2xl text-white font-semibold text-base transition-all duration-200 shadow-lg w-full
+        ${recording ? 'bg-red-500 scale-105 shadow-red-500/40'
+          : disabled ? 'bg-slate-700 opacity-40 cursor-not-allowed'
+          : `${color} hover:scale-105 hover:shadow-xl`}`}
     >
-      <span className="text-4xl">{recording ? '⏹' : '🎙'}</span>
+      <span className="text-3xl">{recording ? '⏹' : '🎙'}</span>
       <span>{recording ? 'Stop Recording' : label}</span>
       {recording && (
         <span className="flex gap-1">
           {[0, 1, 2].map((i) => (
-            <span
-              key={i}
-              className="w-2 h-2 bg-white rounded-full animate-bounce"
-              style={{ animationDelay: `${i * 0.15}s` }}
-            />
+            <span key={i} className="w-2 h-2 bg-white rounded-full animate-bounce"
+              style={{ animationDelay: `${i * 0.15}s` }} />
           ))}
         </span>
       )}
@@ -101,10 +105,10 @@ function CarePlanCard({ plan }: { plan: CarePlan }) {
     { label: 'Diagnosis', value: plan.diagnosis },
     { label: 'Medicines', value: plan.medicines },
     { label: 'Dosage', value: plan.dosage },
-    { label: 'Food', value: plan.foodInstructions },
+    { label: 'Food Instructions', value: plan.foodInstructions },
     { label: 'Restrictions', value: plan.restrictions },
     { label: 'Warning Signs', value: plan.warningSigns },
-    { label: 'Follow-up', value: plan.followUpDate },
+    { label: 'Follow-up Date', value: plan.followUpDate },
   ]
 
   return (
@@ -128,13 +132,21 @@ function CarePlanCard({ plan }: { plan: CarePlan }) {
           </div>
         )
       })}
+      {plan.doctorNote && (
+        <div className="border-t border-slate-700 pt-4">
+          <p className="text-xs uppercase tracking-widest text-slate-400 mb-1">Doctor's Note</p>
+          <p className="text-slate-300 italic text-sm">{plan.doctorNote}</p>
+        </div>
+      )}
     </div>
   )
 }
 
-// ── Main App ─────────────────────────────────────────────────────────────────
+// ── Main App ──────────────────────────────────────────────────────────────────
 
 export default function App() {
+  const [patients, setPatients] = useState<PatientStub[]>([])
+  const [selectedId, setSelectedId] = useState<string>('P001')
   const [carePlan, setCarePlan] = useState<CarePlan | null>(null)
   const [doctorTranscript, setDoctorTranscript] = useState('')
   const [patientTranscript, setPatientTranscript] = useState('')
@@ -145,15 +157,36 @@ export default function App() {
   const doctorRec = useRecorder()
   const patientRec = useRecorder()
 
+  // Load patient list on mount
+  useEffect(() => {
+    fetch('/patients')
+      .then((r) => r.json())
+      .then(setPatients)
+      .catch(() => setStatus('Could not load patient list'))
+  }, [])
+
+  // Load care plan when patient changes
+  useEffect(() => {
+    if (!selectedId) return
+    setCarePlan(null)
+    setDoctorTranscript('')
+    setPatientTranscript('')
+    setAiAnswer('')
+    fetch(`/record?patient_id=${selectedId}`)
+      .then((r) => r.json())
+      .then(setCarePlan)
+      .catch(() => setStatus('Could not load care plan'))
+  }, [selectedId])
+
   // Doctor flow
   const handleDoctorStop = async () => {
     const blob = await doctorRec.stop()
     setLoading(true)
-    setStatus('Transcribing doctor instructions...')
+    setStatus('Processing doctor instructions...')
     try {
       const form = new FormData()
       form.append('audio', blob, 'doctor.webm')
-      const res = await fetch('/doctor', { method: 'POST', body: form })
+      const res = await fetch(`/doctor?patient_id=${selectedId}`, { method: 'POST', body: form })
       if (!res.ok) throw new Error(await res.text())
       const data = await res.json()
       setDoctorTranscript(data.transcript)
@@ -174,7 +207,7 @@ export default function App() {
     try {
       const form = new FormData()
       form.append('audio', blob, 'patient.webm')
-      const res = await fetch('/patient', { method: 'POST', body: form })
+      const res = await fetch(`/patient?patient_id=${selectedId}`, { method: 'POST', body: form })
       if (!res.ok) throw new Error(await res.text())
       const data = await res.json()
       setPatientTranscript(data.transcript)
@@ -193,11 +226,11 @@ export default function App() {
     setLoading(true)
     setStatus('Preparing your full discharge summary...')
     try {
-      const res = await fetch('/summary')
+      const res = await fetch(`/summary?patient_id=${selectedId}`)
       if (!res.ok) throw new Error(await res.text())
       const data = await res.json()
       setAiAnswer(data.summary_text)
-      setStatus('Playing your discharge summary...')
+      setStatus('Summary ready.')
       playAudioB64(data.audio_b64)
     } catch (e: any) {
       setStatus('Error: ' + e.message)
@@ -214,13 +247,12 @@ export default function App() {
           <h1 className="text-3xl font-bold text-white">CareBridge</h1>
           <p className="text-slate-400 text-sm mt-0.5">AI Voice Discharge Companion</p>
         </div>
-        <div className="flex items-center gap-2 text-sm text-slate-400">
-          <span className={`w-2 h-2 rounded-full ${carePlan ? 'bg-emerald-400' : 'bg-slate-600'}`} />
-          {carePlan ? 'Care plan active' : 'Awaiting doctor input'}
+        <div className="text-slate-400 text-sm">
+          {patients.length} patients loaded
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-6 py-10 space-y-10">
+      <main className="max-w-5xl mx-auto px-6 py-10 space-y-8">
         {/* Status bar */}
         {(loading || status) && (
           <div className="bg-slate-800 border border-slate-700 rounded-xl px-5 py-3 flex items-center gap-3">
@@ -231,14 +263,64 @@ export default function App() {
           </div>
         )}
 
-        {/* Two column layout */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+        {/* Patient Switcher */}
+        <div className="space-y-2">
+          <p className="text-xs uppercase tracking-widest text-slate-400">Select Patient</p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+            {patients.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => setSelectedId(p.id)}
+                className={`flex items-center gap-3 px-4 py-3 rounded-xl border text-left transition-all
+                  ${selectedId === p.id
+                    ? 'bg-blue-600 border-blue-500 text-white shadow-lg shadow-blue-500/30 scale-105'
+                    : 'bg-slate-800 border-slate-700 text-slate-300 hover:border-slate-500 hover:bg-slate-700'
+                  }`}
+              >
+                <div className={`w-9 h-9 rounded-full flex items-center justify-center font-bold text-sm shrink-0
+                  ${selectedId === p.id ? 'bg-blue-500' : 'bg-slate-600'}`}>
+                  {p.name[0]}
+                </div>
+                <div className="min-w-0">
+                  <p className="font-semibold text-sm truncate">{p.name}</p>
+                  <p className={`text-xs ${selectedId === p.id ? 'text-blue-200' : 'text-slate-500'}`}>
+                    {p.id} · {p.age}y
+                  </p>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
 
-          {/* Doctor Section */}
-          <section className="bg-slate-800 rounded-2xl p-6 space-y-5">
+        {/* Active patient header + Explain To Me */}
+        {carePlan && (
+          <div className="flex items-center gap-4 bg-slate-800 rounded-2xl px-6 py-4">
+            <div className="w-12 h-12 bg-blue-600 rounded-full flex items-center justify-center text-xl font-bold shrink-0">
+              {carePlan.name[0]}
+            </div>
             <div>
-              <h2 className="text-xl font-semibold text-white">Doctor</h2>
-              <p className="text-slate-400 text-sm">Speak discharge instructions in English</p>
+              <p className="text-white font-semibold text-lg">{carePlan.name}</p>
+              <p className="text-slate-400 text-sm">Age {carePlan.age} · {carePlan.id} · {carePlan.preferredLanguage}</p>
+            </div>
+            <div className="ml-auto">
+              <button
+                onClick={handleExplain}
+                disabled={loading}
+                className="bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white font-semibold px-6 py-3 rounded-xl text-base transition-all hover:scale-105 shadow-lg shadow-violet-500/30 flex items-center gap-2"
+              >
+                <span>✨</span> Explain To Me
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Doctor + Patient columns */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* Doctor */}
+          <section className="bg-slate-800 rounded-2xl p-6 space-y-4">
+            <div>
+              <h2 className="text-lg font-semibold text-white">Doctor</h2>
+              <p className="text-slate-400 text-sm">Record discharge instructions in English</p>
             </div>
             <MicButton
               recording={doctorRec.recording}
@@ -255,10 +337,10 @@ export default function App() {
             )}
           </section>
 
-          {/* Patient Section */}
-          <section className="bg-slate-800 rounded-2xl p-6 space-y-5">
+          {/* Patient */}
+          <section className="bg-slate-800 rounded-2xl p-6 space-y-4">
             <div>
-              <h2 className="text-xl font-semibold text-white">Patient</h2>
+              <h2 className="text-lg font-semibold text-white">Patient</h2>
               <p className="text-slate-400 text-sm">Ask a question in your language</p>
             </div>
             <MicButton
@@ -267,6 +349,7 @@ export default function App() {
               onStop={handlePatientStop}
               label="Ask a Question"
               color="bg-emerald-600"
+              disabled={!carePlan}
             />
             {patientTranscript && (
               <div className="bg-slate-700 rounded-xl p-4">
@@ -279,7 +362,7 @@ export default function App() {
 
         {/* AI Response */}
         {aiAnswer && (
-          <section className="bg-gradient-to-br from-slate-800 to-slate-700 border border-slate-600 rounded-2xl p-6 space-y-3">
+          <section className="bg-gradient-to-br from-slate-800 to-slate-700 border border-slate-600 rounded-2xl p-6 space-y-2">
             <p className="text-xs uppercase tracking-widest text-slate-400">CareBridge Response</p>
             <p className="text-slate-100 text-lg leading-relaxed">{aiAnswer}</p>
           </section>
@@ -287,30 +370,10 @@ export default function App() {
 
         {/* Care Plan */}
         {carePlan && (
-          <section className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xl font-semibold text-white">Patient Care Plan</h2>
-              {/* Explain To Me — the signature delight moment */}
-              <button
-                onClick={handleExplain}
-                disabled={loading}
-                className="bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white font-semibold px-6 py-3 rounded-xl text-base transition-all hover:scale-105 shadow-lg shadow-violet-500/30 flex items-center gap-2"
-              >
-                <span>✨</span>
-                Explain To Me
-              </button>
-            </div>
+          <section className="space-y-3">
+            <h2 className="text-lg font-semibold text-white">Care Plan</h2>
             <CarePlanCard plan={carePlan} />
           </section>
-        )}
-
-        {/* Empty state */}
-        {!carePlan && !loading && (
-          <div className="text-center py-20 text-slate-500">
-            <p className="text-6xl mb-4">🏥</p>
-            <p className="text-lg">Press "Record Instructions" to begin</p>
-            <p className="text-sm mt-2">The doctor speaks first, then the patient can ask questions</p>
-          </div>
         )}
       </main>
     </div>
