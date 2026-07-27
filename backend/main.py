@@ -236,7 +236,7 @@ def sarvam_llm_with_history(system_prompt: str, history: list[dict], new_user_me
         "https://api.sarvam.ai/v1/chat/completions",
         headers={"api-subscription-key": SARVAM_API_KEY},
         json={
-            "model": "sarvam-105b",  # better instruction-following, no reasoning bleed
+            "model": "sarvam-30b",  # faster for patient Q&A — grounded by care plan so 30b is sufficient
             "messages": messages,
             "temperature": 0.2
         },
@@ -858,28 +858,26 @@ async def patient_endpoint(patient_id: str = Query("P001"), audio: UploadFile = 
             "history": get_history(patient_id),
         }
 
-    # 1. Transcribe
+    # 1. Read audio bytes and build system prompt concurrently
     audio_bytes = await audio.read()
+    system_prompt = load_prompt("answer_patient").replace(
+        "{care_plan}", json.dumps(patient, ensure_ascii=False, indent=2)
+    )
+    history = get_history(patient_id)
+
+    # 2. Transcribe
     transcript = await async_stt(audio_bytes, audio.filename or "patient.webm", language_code=language_code)
     if not transcript:
         raise HTTPException(status_code=400, detail="Could not transcribe. Please try again.")
     print(f"[Patient STT] {transcript}")
 
-    # 2. Build grounded system prompt
-    system_prompt = load_prompt("answer_patient").replace(
-        "{care_plan}", json.dumps(patient, ensure_ascii=False, indent=2)
-    )
-
-    # 3. Get history
-    history = get_history(patient_id)
-
-    # 4. LLM with memory
+    # 3. LLM with memory (fire immediately after STT — no extra setup delay)
     raw_answer = await async_llm_with_history(system_prompt, history, transcript)
     print(f"[Patient LLM raw] {raw_answer}")
     answer = clean_llm_answer(raw_answer)
     print(f"[Patient LLM clean] {answer}")
 
-    # 5. Detect unanswered questions and flag for doctor
+    # 4. Detect unanswered questions and flag for doctor
     is_unanswered = any(marker in answer.lower() for marker in UNANSWERED_MARKERS)
     if is_unanswered:
         # Translate question to English so doctor can read it
@@ -894,11 +892,11 @@ async def patient_endpoint(patient_id: str = Query("P001"), audio: UploadFile = 
         flag_unanswered(patient_id, transcript, english_question)
         print(f"[Unanswered] Flagged for doctor: {english_question}")
 
-    # 6. Save to history
+    # 5. Save to history
     append_history(patient_id, "user", transcript)
     append_history(patient_id, "assistant", answer)
 
-    # 7. TTS
+    # 6. TTS
     audio_out = await async_tts(answer, language_code)
 
     return {
