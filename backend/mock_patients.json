@@ -6,10 +6,12 @@
       "age": 52,
       "preferredLanguage": "hi-IN",
       "phone": "+919121910741",
-      "diagnosis": "type 2 diabetes",
-      "medicines": [],
+      "diagnosis": "cancer",
+      "medicines": [
+        "Dolo"
+      ],
       "dosage": "",
-      "foodInstructions": "he should not eat sugar",
+      "foodInstructions": "eat metamorphoine for like two days",
       "restrictions": [],
       "warningSigns": [],
       "followUpDate": "next 40 seconds",
@@ -24,6 +26,11 @@
           "question_original": "इन हिंदी मुझे कौन सी बीमारी थी? मैं कौन सा खाना खा सकता हूँ?",
           "question_english": "इन हिंदी मुझे कौन सी बीमारी थी? मैं कौन सा खाना खा सकता हूँ?",
           "asked_at": "16:22"
+        },
+        {
+          "question_original": "मेरा डिस्चार्ज प्लान समझाओ।",
+          "question_english": "मेरा डिस्चार्ज प्लान समझाओ।",
+          "asked_at": "23:21"
         }
       ],
       "scheduleCallInSeconds": 40

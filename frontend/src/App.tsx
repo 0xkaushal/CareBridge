@@ -26,22 +26,29 @@ interface PatientStub {
 
 // ── Recorder ──────────────────────────────────────────────────────────────────
 
-function useRecorder() {
+const SILENCE_THRESHOLD = 0.01   // RMS below this = silence
+const SILENCE_DURATION_MS = 1500 // stop after 1.5s of continuous silence
+const MIN_SPEECH_MS = 500        // don't stop if we've barely spoken
+
+function useRecorder(onAutoStop?: (blob: Blob) => void) {
   const [recording, setRecording] = useState(false)
   const mediaRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<BlobPart[]>([])
+  const audioCtxRef = useRef<AudioContext | null>(null)
+  const analyserRef = useRef<AnalyserNode | null>(null)
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const rafRef = useRef<number | null>(null)
+  const startTimeRef = useRef<number>(0)
 
-  const start = async () => {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    const mr = new MediaRecorder(stream)
-    chunksRef.current = []
-    mr.ondataavailable = (e) => chunksRef.current.push(e.data)
-    mr.start()
-    mediaRef.current = mr
-    setRecording(true)
+  const _cleanup = () => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
+    if (audioCtxRef.current) { audioCtxRef.current.close(); audioCtxRef.current = null }
+    rafRef.current = null
+    silenceTimerRef.current = null
   }
 
-  const stop = (): Promise<Blob> =>
+  const _buildBlob = (): Promise<Blob> =>
     new Promise((resolve) => {
       const mr = mediaRef.current!
       mr.onstop = () => {
@@ -52,6 +59,56 @@ function useRecorder() {
       mr.stop()
       setRecording(false)
     })
+
+  const start = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    const mr = new MediaRecorder(stream)
+    chunksRef.current = []
+    mr.ondataavailable = (e) => chunksRef.current.push(e.data)
+    mr.start()
+    mediaRef.current = mr
+    startTimeRef.current = Date.now()
+    setRecording(true)
+
+    // VAD via Web Audio analyser
+    const ctx = new AudioContext()
+    audioCtxRef.current = ctx
+    const source = ctx.createMediaStreamSource(stream)
+    const analyser = ctx.createAnalyser()
+    analyser.fftSize = 512
+    source.connect(analyser)
+    analyserRef.current = analyser
+
+    const data = new Float32Array(analyser.fftSize)
+    let silentSince: number | null = null
+
+    const tick = () => {
+      analyser.getFloatTimeDomainData(data)
+      const rms = Math.sqrt(data.reduce((s, v) => s + v * v, 0) / data.length)
+      const elapsed = Date.now() - startTimeRef.current
+
+      if (rms < SILENCE_THRESHOLD) {
+        if (silentSince === null) silentSince = Date.now()
+        const silentFor = Date.now() - silentSince
+        if (silentFor >= SILENCE_DURATION_MS && elapsed >= MIN_SPEECH_MS) {
+          _cleanup()
+          _buildBlob().then((blob) => onAutoStop?.(blob))
+          return
+        }
+      } else {
+        silentSince = null
+      }
+      rafRef.current = requestAnimationFrame(tick)
+    }
+    rafRef.current = requestAnimationFrame(tick)
+  }
+
+  const stop = (): Promise<Blob> => {
+    _cleanup()
+    const p = _buildBlob()
+    p.then((blob) => onAutoStop?.(blob))
+    return p
+  }
 
   return { recording, start, stop }
 }
@@ -173,7 +230,23 @@ function DoctorView({ onSwitchRole }: { onSwitchRole: () => void }) {
   const [status, setStatus] = useState('')
   const [loading, setLoading] = useState(false)
   const [unanswered, setUnanswered] = useState<UnansweredQuestion[]>([])
-  const rec = useRecorder()
+  const handleStop = async (blob: Blob) => {
+    setLoading(true); setStatus('Transcribing and extracting care plan...')
+    try {
+      const form = new FormData()
+      form.append('audio', blob, 'doctor.webm')
+      const res = await fetch(`/doctor?patient_id=${selectedId}`, { method: 'POST', body: form })
+      if (!res.ok) throw new Error(await res.text())
+      const data = await res.json()
+      setTranscript(data.transcript)
+      setCarePlan(data.care_plan)
+      setStatus('Care plan updated successfully.')
+      refreshQuestions()
+    } catch (e: any) { setStatus('Error: ' + e.message) }
+    finally { setLoading(false) }
+  }
+
+  const rec = useRecorder((blob) => handleStop(blob))
 
   useEffect(() => {
     fetch('/patients').then(r => r.json()).then(setPatients).catch(() => setStatus('Could not load patients'))
@@ -203,23 +276,6 @@ function DoctorView({ onSwitchRole }: { onSwitchRole: () => void }) {
       .then(r => r.json())
       .then(d => setUnanswered(d.questions || []))
       .catch(() => {})
-  }
-
-  const handleStop = async () => {
-    const blob = await rec.stop()
-    setLoading(true); setStatus('Transcribing and extracting care plan...')
-    try {
-      const form = new FormData()
-      form.append('audio', blob, 'doctor.webm')
-      const res = await fetch(`/doctor?patient_id=${selectedId}`, { method: 'POST', body: form })
-      if (!res.ok) throw new Error(await res.text())
-      const data = await res.json()
-      setTranscript(data.transcript)
-      setCarePlan(data.care_plan)
-      setStatus('Care plan updated successfully.')
-    } catch (e: any) {
-      setStatus('Error: ' + e.message)
-    } finally { setLoading(false) }
   }
 
   const handleClearQuestions = async () => {
@@ -316,7 +372,7 @@ function DoctorView({ onSwitchRole }: { onSwitchRole: () => void }) {
           </div>
 
           <button
-            onClick={rec.recording ? handleStop : rec.start}
+            onClick={rec.recording ? rec.stop : rec.start}
             disabled={loading}
             className={`w-full flex flex-col items-center gap-3 py-7 rounded-xl font-semibold text-white transition-all duration-200
               ${rec.recording
@@ -478,7 +534,25 @@ function PatientView({ onSwitchRole }: { onSwitchRole: () => void }) {
   const [lastAudioB64, setLastAudioB64] = useState('')
   const [status, setStatus] = useState('')
   const [loading, setLoading] = useState(false)
-  const rec = useRecorder()
+
+  const handleStop = async (blob: Blob) => {
+    if (!patientId) return
+    setLoading(true); setStatus('Listening...'); setLastAudioB64('')
+    try {
+      const form = new FormData()
+      form.append('audio', blob, 'patient.webm')
+      const res = await fetch(`/patient?patient_id=${patientId}`, { method: 'POST', body: form })
+      if (!res.ok) throw new Error(await res.text())
+      const data = await res.json()
+      setHistory(h => [...h, { role: 'user', content: data.transcript }, { role: 'assistant', content: data.answer }])
+      setLastAudioB64(data.audio_b64)
+      setStatus('')
+      playAudioB64(data.audio_b64)
+    } catch (e: any) { setStatus('Error: ' + e.message) }
+    finally { setLoading(false) }
+  }
+
+  const rec = useRecorder((blob) => handleStop(blob))
   const bottomRef = useRef<HTMLDivElement>(null)
 
   const handleLogin = (id: string) => {
@@ -492,25 +566,6 @@ function PatientView({ onSwitchRole }: { onSwitchRole: () => void }) {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [history])
-
-  const handleStop = async () => {
-    if (!patientId) return
-    const blob = await rec.stop()
-    setLoading(true); setStatus('Listening...'); setLastAudioB64('')
-    try {
-      const form = new FormData()
-      form.append('audio', blob, 'patient.webm')
-      const res = await fetch(`/patient?patient_id=${patientId}`, { method: 'POST', body: form })
-      if (!res.ok) throw new Error(await res.text())
-      const data = await res.json()
-      // update local history from backend (source of truth)
-      setHistory(h => [...h, { role: 'user', content: data.transcript }, { role: 'assistant', content: data.answer }])
-      setLastAudioB64(data.audio_b64)
-      setStatus('')
-      playAudioB64(data.audio_b64)
-    } catch (e: any) { setStatus('Error: ' + e.message) }
-    finally { setLoading(false) }
-  }
 
   const handleExplain = async () => {
     if (!patientId) return
@@ -645,7 +700,7 @@ function PatientView({ onSwitchRole }: { onSwitchRole: () => void }) {
         {carePlan && (
           <div className="sticky bottom-5">
             <button
-              onClick={rec.recording ? handleStop : rec.start}
+              onClick={rec.recording ? rec.stop : rec.start}
               disabled={loading}
               className={`w-full flex items-center justify-center gap-4 py-5 rounded-2xl font-bold text-white text-lg transition-all duration-200
                 ${rec.recording
