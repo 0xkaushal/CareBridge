@@ -483,16 +483,38 @@ async def vobiz_ws(websocket: WebSocket, patient_id: str = Query("P001")):
     stream_id = None
     stream_sample_rate = 16000
     audio_buffer = bytearray()
-    # 3 seconds of L16 16kHz mono = 96000 bytes
-    CHUNK_THRESHOLD = 96000
     checkpoint_counter = 0
+
+    # ── Silence-based VAD constants ──────────────────────────────────────────
+    # L16 16kHz mono: 1 frame = 2 bytes, 160 frames = 10ms
+    SILENCE_RMS_THRESHOLD = 300      # L16 amplitude (0–32767); below = silence
+    SILENCE_FRAMES_NEEDED = 80       # 80 × 10ms = 800ms silence to end utterance
+    MIN_SPEECH_BYTES = 16000 * 2     # at least 1 second of speech before processing
+    MAX_SPEECH_BYTES = 16000 * 2 * 8 # safety cap: 8 seconds max
+
+    speech_buffer = bytearray()      # accumulates the current utterance
+    silence_frame_count = 0          # consecutive silent 10ms frames
+    in_speech = False                # are we currently capturing speech?
+    processing = False               # guard: don't overlap pipeline calls
+
+    def _pcm_rms(chunk: bytes) -> float:
+        """RMS energy of a raw L16 PCM chunk."""
+        try:
+            import array as arr
+            samples = arr.array('h')
+            samples.frombytes(chunk[:len(chunk) - len(chunk) % 2])
+            if not samples:
+                return 0.0
+            return (sum(s * s for s in samples) / len(samples)) ** 0.5
+        except Exception:
+            return 0.0
 
     try:
         while True:
             try:
-                raw = await asyncio.wait_for(websocket.receive_text(), timeout=20.0)
+                raw = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
             except asyncio.TimeoutError:
-                logger.warning("[WS] Timeout — no data for 20s, closing")
+                logger.warning("[WS] Timeout — no data for 30s, closing")
                 break
 
             try:
@@ -511,7 +533,7 @@ async def vobiz_ws(websocket: WebSocket, patient_id: str = Query("P001")):
                 stream_sample_rate = fmt.get("sampleRate", 16000)
                 logger.info(f"[WS] Stream started — streamId: {stream_id}, format: {fmt}")
 
-                # Send greeting NOW (after receiving start, so Vobiz is ready)
+                # Send greeting and then wait for patient to speak
                 greeting_text = _build_greeting(patient, language_code)
                 logger.info(f"[WS] Sending greeting: {greeting_text[:60]}")
                 try:
@@ -523,27 +545,82 @@ async def vobiz_ws(websocket: WebSocket, patient_id: str = Query("P001")):
                     logger.error(f"[WS] Greeting failed: {e}")
 
             elif event == "media":
-                payload_b64 = msg.get("media", {}).get("payload", "")
-                if payload_b64:
-                    chunk = base64.b64decode(payload_b64)
-                    audio_buffer.extend(chunk)
+                if processing:
+                    continue  # drop audio while pipeline is running
 
-                    if len(audio_buffer) >= CHUNK_THRESHOLD:
-                        buf_copy = bytes(audio_buffer)
-                        audio_buffer.clear()
+                payload_b64 = msg.get("media", {}).get("payload", "")
+                if not payload_b64:
+                    continue
+
+                chunk = base64.b64decode(payload_b64)
+                rms = _pcm_rms(chunk)
+
+                if rms >= SILENCE_RMS_THRESHOLD:
+                    # ── Active speech ─────────────────────────────────────
+                    in_speech = True
+                    silence_frame_count = 0
+                    speech_buffer.extend(chunk)
+
+                    # Safety cap — process immediately if too long
+                    if len(speech_buffer) >= MAX_SPEECH_BYTES:
+                        buf_copy = bytes(speech_buffer)
+                        speech_buffer.clear()
+                        in_speech = False
+                        silence_frame_count = 0
                         checkpoint_counter += 1
                         cp = checkpoint_counter
-                        await _process_audio(
-                            websocket, buf_copy, patient_id,
-                            language_code, system_prompt, patient,
-                            stream_id, stream_sample_rate, f"turn-{cp}"
-                        )
+                        processing = True
+                        try:
+                            await _process_audio(
+                                websocket, buf_copy, patient_id,
+                                language_code, system_prompt, patient,
+                                stream_id, stream_sample_rate, f"turn-{cp}"
+                            )
+                        finally:
+                            processing = False
+                else:
+                    # ── Silence ───────────────────────────────────────────
+                    if in_speech:
+                        speech_buffer.extend(chunk)  # include trailing silence
+                        silence_frame_count += 1
+
+                        if silence_frame_count >= SILENCE_FRAMES_NEEDED:
+                            # End of utterance detected
+                            if len(speech_buffer) >= MIN_SPEECH_BYTES:
+                                buf_copy = bytes(speech_buffer)
+                                speech_buffer.clear()
+                                in_speech = False
+                                silence_frame_count = 0
+                                checkpoint_counter += 1
+                                cp = checkpoint_counter
+                                processing = True
+                                try:
+                                    await _process_audio(
+                                        websocket, buf_copy, patient_id,
+                                        language_code, system_prompt, patient,
+                                        stream_id, stream_sample_rate, f"turn-{cp}"
+                                    )
+                                finally:
+                                    processing = False
+                            else:
+                                # Too short — probably noise, discard
+                                logger.info("[WS VAD] Utterance too short — discarding")
+                                speech_buffer.clear()
+                                in_speech = False
+                                silence_frame_count = 0
 
             elif event == "playedStream":
                 logger.info(f"[WS] Checkpoint ack: {msg.get('name')}")
 
             elif event == "clearedAudio":
                 logger.info("[WS] Audio cleared")
+
+            elif event == "stop":
+                logger.info(f"[WS] Call ended by Vobiz: {msg}")
+                break
+
+            else:
+                logger.debug(f"[WS] Unhandled event '{event}': {str(msg)[:120]}")
 
     except WebSocketDisconnect:
         logger.info(f"[WS] Patient {patient['name']} disconnected")
@@ -555,13 +632,13 @@ async def vobiz_ws(websocket: WebSocket, patient_id: str = Query("P001")):
 
 def _build_greeting(patient: dict, language_code: str) -> str:
     name = patient.get("name", "")
-    followup = patient.get("followUpDate", "")
     greetings = {
-        "kn-IN": f"ನಮಸ್ಕಾರ {name}. ನಾನು CareBridge. ನಿಮ್ಮ ಫಾಲೋ-ಅಪ್ {followup} ರಂದು ಇದೆ. ಯಾವುದಾದರೂ ಪ್ರಶ್ನೆ ಇದ್ದರೆ ಕೇಳಿ.",
-        "hi-IN": f"नमस्ते {name}। मैं CareBridge हूँ। आपका follow-up {followup} को है। कोई सवाल हो तो पूछें।",
-        "ta-IN": f"வணக்கம் {name}. நான் CareBridge. உங்கள் follow-up {followup} அன்று உள்ளது.",
-        "te-IN": f"నమస్కారం {name}. నేను CareBridge. మీ follow-up {followup} న ఉంది.",
-        "en-IN": f"Hello {name}, this is CareBridge. Your follow-up is on {followup}. Any questions?",
+        "kn-IN": f"ನಮಸ್ಕಾರ {name}. ನಾನು CareBridge. ನಿಮ್ಮ ಪ್ರಶ್ನೆ ಕೇಳಿ.",
+        "hi-IN": f"नमस्ते {name}। मैं CareBridge हूँ। अपना सवाल पूछें।",
+        "ta-IN": f"வணக்கம் {name}. நான் CareBridge. உங்கள் கேள்வியை கேளுங்கள்.",
+        "te-IN": f"నమస్కారం {name}. నేను CareBridge. మీ ప్రశ్న అడగండి.",
+        "mr-IN": f"नमस्कार {name}. मी CareBridge आहे. तुमचा प्रश्न विचारा.",
+        "en-IN": f"Hello {name}, this is CareBridge. Please ask your question.",
     }
     return greetings.get(language_code, greetings["hi-IN"])
 
