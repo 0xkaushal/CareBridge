@@ -6,12 +6,12 @@
       "age": 52,
       "preferredLanguage": "hi-IN",
       "phone": "+919121910741",
-      "diagnosis": "cancer",
+      "diagnosis": "fever",
       "medicines": [
         "Dolo"
       ],
-      "dosage": "",
-      "foodInstructions": "eat metamorphoine for like two days",
+      "dosage": "twice a day",
+      "foodInstructions": "should not eat sugar",
       "restrictions": [],
       "warningSigns": [],
       "followUpDate": "next 40 seconds",

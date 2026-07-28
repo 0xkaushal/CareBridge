@@ -227,7 +227,12 @@ def sarvam_llm_with_history(system_prompt: str, history: list[dict], new_user_me
     - new_user_message: the latest patient question
     """
     messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(history)
+    # Sanitize history — only pass role+content, skip any malformed entries
+    for turn in history:
+        role = turn.get("role", "")
+        content = turn.get("content", "")
+        if role in ("user", "assistant") and content:
+            messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": new_user_message})
 
     print(f"[LLM] Sending {len(messages)} messages ({len(history)} history turns)")
@@ -244,7 +249,12 @@ def sarvam_llm_with_history(system_prompt: str, history: list[dict], new_user_me
     )
     resp.raise_for_status()
     data = resp.json()
-    message = data.get("choices", [{}])[0].get("message", {})
+    logger.debug(f"[LLM] Raw response keys: {list(data.keys())}")
+    choices = data.get("choices", [])
+    if not choices:
+        logger.error(f"[LLM] No choices in response: {data}")
+        raise ValueError(f"LLM returned no choices: {data}")
+    message = choices[0].get("message", {})
     content = message.get("content") or ""
 
     # Strip any chain-of-thought reasoning that leaks through
@@ -262,7 +272,7 @@ def sarvam_llm_with_history(system_prompt: str, history: list[dict], new_user_me
                     break
 
     if not content:
-        raise HTTPException(status_code=500, detail=f"LLM empty response: {data}")
+        raise ValueError(f"LLM empty content: {data}")
     return content
 
 
@@ -764,19 +774,25 @@ async def _process_audio(
 
         # LLM with memory
         history = get_history(patient_id)
+        logger.debug(f"[WS pipeline] Calling LLM...")
         raw_answer = await async_llm_with_history(system_prompt, history, transcript)
+        logger.debug(f"[WS pipeline] LLM done, cleaning answer...")
         answer = clean_llm_answer(raw_answer)
         logger.info(f"[WS LLM] {answer}")
 
+        logger.debug(f"[WS pipeline] Appending history...")
         append_history(patient_id, "user", transcript)
         append_history(patient_id, "assistant", answer)
 
         # TTS → send back
+        logger.debug(f"[WS pipeline] Calling TTS for lang={language_code}...")
         audio_out = await async_tts(answer, language_code)
+        logger.debug(f"[WS pipeline] TTS done ({len(audio_out)} bytes), sending audio...")
         await _send_audio(websocket, audio_out, stream_id, sample_rate, checkpoint_name)
+        logger.debug(f"[WS pipeline] Audio sent OK")
 
     except Exception as e:
-        logger.error(f"[WS pipeline] Error: {e}", exc_info=True)
+        logger.error(f"[WS pipeline] Error at step above: {e}", exc_info=True)
 
 
 @app.get("/patients")
